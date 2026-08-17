@@ -1,0 +1,35 @@
+{
+  "name": "dsh-token-stats",
+  "version": "1.0.0",
+  "description": "Token usage statistics for DeepSeek Harness: last-7/30-day per-model daily and total consumption (bar chart + donut), plus a GitHub-style contributions heatmap over the last year.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./typert": "./typert.host.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "typert.host.js"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.7"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "scripts": {
+    "install:local": "node scripts/install.mjs",
+    "check": "node --check index.js && node --check client.js && node --check typert.host.js"
+  }
+}
