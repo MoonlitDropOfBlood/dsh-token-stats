@@ -124,10 +124,6 @@ window.__ModuleLoader__.load({
         return String(n);
       }
 
-      function fmtExact(n) {
-        return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-      }
-
       function keyOf(d) {
         return (
           d.getFullYear() +
@@ -247,7 +243,7 @@ window.__ModuleLoader__.load({
               React.createElement(
                 "rect",
                 { key: "b" + i + "_" + m.key, x, y, width: barW, height: h, fill: colorOf[m.key] },
-                React.createElement("title", null, day.label + " · " + rec.name + ": " + fmtExact(rec.total)),
+                React.createElement("title", null, day.label + " · " + rec.name + ": " + fmtCompact(rec.total)),
               ),
             );
           }
@@ -275,7 +271,7 @@ window.__ModuleLoader__.load({
             "span", { key: m.key, className: "ts-legend-chip", title: m.key },
             React.createElement("span", { className: "ts-legend-dot", style: { background: PALETTE[i % PALETTE.length] } }),
             React.createElement("span", { className: "ts-legend-name" }, m.name),
-            React.createElement("span", { className: "ts-legend-val" }, fmtExact(m.total)),
+            React.createElement("span", { className: "ts-legend-val" }, fmtCompact(m.total)),
           ),
         );
         return React.createElement("div", { className: "ts-bar-legend" }, rows);
@@ -329,7 +325,7 @@ window.__ModuleLoader__.load({
                   strokeDashoffset: -offset,
                   transform: "rotate(-90 " + cx + " " + cy + ")",
                 },
-                React.createElement("title", null, m.name + ": " + fmtExact(m.total) + " (" + ((m.total / total) * 100).toFixed(1) + "%)"),
+                React.createElement("title", null, m.name + ": " + fmtCompact(m.total) + " (" + ((m.total / total) * 100).toFixed(1) + "%)"),
               ),
             );
             offset += dash;
@@ -359,7 +355,7 @@ window.__ModuleLoader__.load({
             React.createElement("span", { className: "ts-legend-name", title: m.key }, m.name),
             React.createElement(
               "span", { className: "ts-legend-val" },
-              fmtExact(m.total) + " · " + (total > 0 ? ((m.total / total) * 100).toFixed(1) : "0") + "%",
+              fmtCompact(m.total) + " · " + (total > 0 ? ((m.total / total) * 100).toFixed(1) : "0") + "%",
             ),
           ),
         );
@@ -402,7 +398,7 @@ window.__ModuleLoader__.load({
                 key: "c" + i, x, y, width: cell, height: cell, rx: 2,
                 className: "ts-heat ts-heat-" + heatLevel(v, max),
               },
-              React.createElement("title", null, (d.getMonth() + 1) + "/" + d.getDate() + " · " + fmtExact(v) + " tokens"),
+              React.createElement("title", null, (d.getMonth() + 1) + "/" + d.getDate() + " · " + fmtCompact(v) + " tokens"),
             ),
           );
           const m = d.getMonth();
@@ -448,9 +444,9 @@ window.__ModuleLoader__.load({
       function SummaryCards(props) {
         const sum = props.sum;
         const items = [
-          ["总 Tokens", fmtExact(sum.total)],
-          ["输入(含缓存)", fmtExact(sum.input + sum.cacheRead + sum.cacheWrite)],
-          ["输出", fmtExact(sum.output)],
+          ["总 Tokens", fmtCompact(sum.total)],
+          ["输入(含缓存)", fmtCompact(sum.input + sum.cacheRead + sum.cacheWrite)],
+          ["输出", fmtCompact(sum.output)],
         ];
         return React.createElement(
           "div", { className: "ts-cards" },
