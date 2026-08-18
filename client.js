@@ -41,14 +41,16 @@ window.__ModuleLoader__.load({
 .ts-block-title{color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:500;line-height:20px}
 .ts-bar-legend{display:flex;flex-wrap:wrap;gap:6px 14px}
 .ts-legend-chip{display:inline-flex;align-items:center;gap:6px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.ts-bar-legend .ts-legend-name{color:var(--dsw-alias-label-primary)}
 .ts-legend-dot{width:10px;height:10px;border-radius:3px;flex:none;display:inline-block}
 .ts-pie-wrap{display:flex;flex-wrap:wrap;gap:20px;align-items:center}
 .ts-legend{display:flex;flex-direction:column;gap:8px;min-width:180px;flex:1}
 .ts-legend-row{display:flex;align-items:center;gap:8px;font-size:12px;line-height:18px}
 .ts-legend-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ts-legend-val{color:var(--dsw-alias-label-secondary);white-space:nowrap}
-.ts-heat-0{fill:var(--dsw-alias-bg-layer-2)}
-.ts-heat-1{fill:var(--dsw-alias-state-success-primary);opacity:0.25}
+.ts-heat{stroke:var(--dsw-alias-border-l1);stroke-width:0.5}
+.ts-heat-0{fill:var(--dsw-alias-bg-layer-2);fill:color-mix(in srgb,var(--dsw-alias-border-l1) 45%,transparent)}
+.ts-heat-1{fill:var(--dsw-alias-state-success-primary);opacity:0.3}
 .ts-heat-2{fill:var(--dsw-alias-state-success-primary);opacity:0.5}
 .ts-heat-3{fill:var(--dsw-alias-state-success-primary);opacity:0.75}
 .ts-heat-4{fill:var(--dsw-alias-state-success-primary);opacity:1}
@@ -165,10 +167,17 @@ window.__ModuleLoader__.load({
         }
         const totals = new Map();
         for (const day of dayList) {
-          for (const m of day.models) totals.set(m.key, (totals.get(m.key) || 0) + m.total);
+          for (const m of day.models) {
+            let agg = totals.get(m.key);
+            if (!agg) {
+              agg = { total: 0, name: m.name };
+              totals.set(m.key, agg);
+            }
+            agg.total += m.total;
+          }
         }
         const rangeModels = [];
-        for (const [key, total] of totals) rangeModels.push({ key, total });
+        for (const [key, agg] of totals) rangeModels.push({ key, total: agg.total, name: agg.name });
         rangeModels.sort((a, b) => b.total - a.total);
         const sum = { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
         for (const day of dayList) {
@@ -259,31 +268,13 @@ window.__ModuleLoader__.load({
       function BarLegend(props) {
         const rows = props.rangeModels.map((m, i) =>
           React.createElement(
-            "span", { key: m.key, className: "ts-legend-chip" },
+            "span", { key: m.key, className: "ts-legend-chip", title: m.key },
             React.createElement("span", { className: "ts-legend-dot", style: { background: PALETTE[i % PALETTE.length] } }),
-            m.name,
+            React.createElement("span", { className: "ts-legend-name" }, m.name),
+            React.createElement("span", { className: "ts-legend-val" }, fmtExact(m.total)),
           ),
         );
         return React.createElement("div", { className: "ts-bar-legend" }, rows);
-      }
-
-      function ringPath(cx, cy, rOuter, rInner, a0, a1) {
-        const x0 = cx + rOuter * Math.cos(a0);
-        const y0 = cy + rOuter * Math.sin(a0);
-        const x1 = cx + rOuter * Math.cos(a1);
-        const y1 = cy + rOuter * Math.sin(a1);
-        const x2 = cx + rInner * Math.cos(a1);
-        const y2 = cy + rInner * Math.sin(a1);
-        const x3 = cx + rInner * Math.cos(a0);
-        const y3 = cy + rInner * Math.sin(a0);
-        const large = a1 - a0 > Math.PI ? 1 : 0;
-        return (
-          "M" + x0 + " " + y0 +
-          " A" + rOuter + " " + rOuter + " 0 " + large + " 1 " + x1 + " " + y1 +
-          " L" + x2 + " " + y2 +
-          " A" + rInner + " " + rInner + " 0 " + large + " 0 " + x3 + " " + y3 +
-          " Z"
-        );
       }
 
       function PieChart(props) {
@@ -295,11 +286,14 @@ window.__ModuleLoader__.load({
         const cy = size / 2;
         const rOuter = size / 2 - 8;
         const rInner = rOuter * 0.58;
+        const rMid = (rOuter + rInner) / 2;
+        const strokeWidth = rOuter - rInner;
+        const C = 2 * Math.PI * rMid;
         const els = [];
         if (total <= 0) {
           els.push(
             React.createElement("circle", {
-              key: "e", cx, cy, r: rInner, fill: "none",
+              key: "e", cx, cy, r: rMid, fill: "none",
               stroke: "var(--dsw-alias-border-l1)", strokeWidth: 1,
             }),
           );
@@ -310,20 +304,31 @@ window.__ModuleLoader__.load({
             }, "暂无数据"),
           );
         } else {
-          let angle = -Math.PI / 2;
+          els.push(
+            React.createElement("circle", {
+              key: "track", cx, cy, r: rMid, fill: "none",
+              stroke: "var(--dsw-alias-bg-layer-2)", strokeWidth,
+            }),
+          );
+          let offset = 0;
           rangeModels.forEach((m, i) => {
             if (m.total <= 0) return;
-            const sweep = (m.total / total) * Math.PI * 2;
-            const a0 = angle;
-            const a1 = angle + sweep;
-            angle = a1;
+            const dash = (m.total / total) * C;
             els.push(
               React.createElement(
-                "path",
-                { key: "w" + i, d: ringPath(cx, cy, rOuter, rInner, a0, a1), fill: PALETTE[i % PALETTE.length] },
+                "circle",
+                {
+                  key: "w" + i, cx, cy, r: rMid, fill: "none",
+                  stroke: PALETTE[i % PALETTE.length],
+                  strokeWidth,
+                  strokeDasharray: dash + " " + (C - dash),
+                  strokeDashoffset: -offset,
+                  transform: "rotate(-90 " + cx + " " + cy + ")",
+                },
                 React.createElement("title", null, m.name + ": " + fmtExact(m.total) + " (" + ((m.total / total) * 100).toFixed(1) + "%)"),
               ),
             );
+            offset += dash;
           });
           els.push(
             React.createElement("text", {
@@ -391,7 +396,7 @@ window.__ModuleLoader__.load({
               "rect",
               {
                 key: "c" + i, x, y, width: cell, height: cell, rx: 2,
-                className: "ts-heat-" + heatLevel(v, max),
+                className: "ts-heat ts-heat-" + heatLevel(v, max),
               },
               React.createElement("title", null, (d.getMonth() + 1) + "/" + d.getDate() + " · " + fmtExact(v) + " tokens"),
             ),
@@ -426,7 +431,7 @@ window.__ModuleLoader__.load({
       function HeatLegend() {
         const cells = [];
         for (let i = 0; i < 5; i++) {
-          cells.push(React.createElement("span", { key: i, className: "ts-heat-" + i + " ts-heat-legend-cell" }));
+          cells.push(React.createElement("span", { key: i, className: "ts-heat ts-heat-" + i + " ts-heat-legend-cell" }));
         }
         return React.createElement(
           "div", { className: "ts-heat-legend" },
