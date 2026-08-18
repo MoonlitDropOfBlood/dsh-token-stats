@@ -58,6 +58,10 @@ window.__ModuleLoader__.load({
 .ts-heat-legend-cell{width:10px;height:10px;border-radius:2px}
 .ts-heat-legend-label{color:var(--dsw-alias-label-secondary);font-size:11px;margin:0 6px}
 .ts-empty{color:var(--dsw-alias-label-secondary);font-size:13px;padding:24px 0}
+.ts-error{color:var(--dsw-alias-state-error-primary)}
+.ts-loading{display:flex;align-items:center;gap:10px;color:var(--dsw-alias-label-secondary);font-size:13px;padding:24px 0}
+.ts-spinner{width:16px;height:16px;border-radius:50%;border:2px solid var(--dsw-alias-border-l1);border-top-color:var(--dsw-alias-brand-primary);animation:ts-spin .8s linear infinite;flex:none}
+@keyframes ts-spin{to{transform:rotate(360deg)}}
 `;
 
     // ---- Client Remote contribution ----------------------------------------
@@ -471,8 +475,19 @@ window.__ModuleLoader__.load({
           try {
             const res = await remote.getStats();
             if (res && res.ok) {
-              setData(res.value);
-              setError(null);
+              // The Remote gateway returns `res.value` = the Host method's full
+              // `{ ok, value }` envelope; unwrap it (tolerate both shapes).
+              const v = res.value;
+              const payload =
+                v && typeof v === "object" && v.ok === true && v.value && typeof v.value === "object"
+                  ? v.value
+                  : v;
+              if (payload && typeof payload === "object" && Array.isArray(payload.days)) {
+                setData(payload);
+                setError(null);
+              } else {
+                setError("统计数据格式异常");
+              }
             } else {
               const err = res && res.error;
               setError((err && err.message) || (err && err.code) || "获取统计数据失败");
@@ -523,41 +538,58 @@ window.__ModuleLoader__.load({
 
         let body;
         if (error) {
-          body = React.createElement("div", { className: "ts-empty" }, "加载失败：" + error);
+          body = React.createElement("div", { className: "ts-empty ts-error" }, "加载失败：" + error);
         } else if (!data) {
-          body = React.createElement("div", { className: "ts-empty" }, "加载中…");
-        } else {
-          const range = buildRange(data, tab);
-          const daysMap = {};
-          for (const d of data.days) daysMap[d.date] = d.total;
-          const chartWidth = Math.min(width, 720);
           body = React.createElement(
-            "div", { className: "ts-body" },
-            React.createElement(SummaryCards, { sum: range.sum }),
-            React.createElement(
-              "div", { className: "ts-block" },
-              React.createElement("div", { className: "ts-block-title" }, "每日消耗 · 按模型"),
-              width > 0
-                ? React.createElement(BarChart, { dayList: range.dayList, rangeModels: range.rangeModels, width: chartWidth })
-                : null,
-              React.createElement(BarLegend, { rangeModels: range.rangeModels }),
-            ),
-            React.createElement(
-              "div", { className: "ts-block" },
-              React.createElement("div", { className: "ts-block-title" }, "模型总消耗占比"),
-              React.createElement(
-                "div", { className: "ts-pie-wrap" },
-                React.createElement(PieChart, { rangeModels: range.rangeModels, sum: range.sum, size: 190 }),
-                React.createElement(PieLegend, { rangeModels: range.rangeModels, total: range.sum.total }),
-              ),
-            ),
-            React.createElement(
-              "div", { className: "ts-block" },
-              React.createElement("div", { className: "ts-block-title" }, "每日活跃 · 近一年（随宽度自适应）"),
-              width > 0 ? React.createElement(Heatmap, { daysMap, width: chartWidth }) : null,
-              React.createElement(HeatLegend, null),
-            ),
+            "div", { className: "ts-loading" },
+            React.createElement("span", { className: "ts-spinner", "aria-hidden": true }),
+            React.createElement("span", null, "正在加载统计数据…"),
           );
+        } else {
+          let range = null;
+          const daysMap = {};
+          let renderError = null;
+          try {
+            range = buildRange(data, tab);
+            for (const d of data.days) daysMap[d.date] = d.total;
+          } catch (e) {
+            renderError = e instanceof Error ? e.message : String(e);
+          }
+          if (renderError || !range) {
+            body = React.createElement(
+              "div", { className: "ts-empty ts-error" },
+              "数据渲染失败：" + (renderError || "未知错误"),
+            );
+          } else {
+            const chartWidth = Math.min(width, 720);
+            body = React.createElement(
+              "div", { className: "ts-body" },
+              React.createElement(SummaryCards, { sum: range.sum }),
+              React.createElement(
+                "div", { className: "ts-block" },
+                React.createElement("div", { className: "ts-block-title" }, "每日消耗 · 按模型"),
+                width > 0
+                  ? React.createElement(BarChart, { dayList: range.dayList, rangeModels: range.rangeModels, width: chartWidth })
+                  : null,
+                React.createElement(BarLegend, { rangeModels: range.rangeModels }),
+              ),
+              React.createElement(
+                "div", { className: "ts-block" },
+                React.createElement("div", { className: "ts-block-title" }, "模型总消耗占比"),
+                React.createElement(
+                  "div", { className: "ts-pie-wrap" },
+                  React.createElement(PieChart, { rangeModels: range.rangeModels, sum: range.sum, size: 190 }),
+                  React.createElement(PieLegend, { rangeModels: range.rangeModels, total: range.sum.total }),
+                ),
+              ),
+              React.createElement(
+                "div", { className: "ts-block" },
+                React.createElement("div", { className: "ts-block-title" }, "每日活跃 · 近一年（随宽度自适应）"),
+                width > 0 ? React.createElement(Heatmap, { daysMap, width: chartWidth }) : null,
+                React.createElement(HeatLegend, null),
+              ),
+            );
+          }
         }
 
         const status =
