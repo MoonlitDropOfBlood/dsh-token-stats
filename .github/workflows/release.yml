@@ -1,7 +1,9 @@
 name: Release
 
 # 打 v* 标签（如 v1.0.0）时构建插件包并发布为 GitHub Release。
-# 发布需要仓库 secret：GH_TOKEN（GitHub Personal Access Token，需 contents:write 权限）。
+# 发布凭证：优先用仓库 secret GH_TOKEN（PAT，contents:write），缺省时回退到
+# 内置 GITHUB_TOKEN（工作流已声明 permissions: contents: write）。
+# 注意：仓库没有 lockfile，setup-node 不能开 cache: npm（会因找不到锁文件而失败）。
 # 也支持手动触发（workflow_dispatch）构建产物但不发布正式 Release（仅 artifact）。
 on:
   workflow_dispatch:
@@ -22,7 +24,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
       - name: Install dependencies
         run: npm ci || npm install
@@ -84,4 +85,4 @@ jobs:
             ```
           files: artifacts/*
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}

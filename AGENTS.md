@@ -131,7 +131,7 @@ node scripts/install.mjs # 安装到本机 DSH profile
 
 ## 发布
 
-打 `v1.0.0` 标签推送到 GitHub，`.github/workflows/release.yml` 会自动构建 `npm pack` 产物并发布为 GitHub Release（需要 `GH_TOKEN` secret，权限 `contents:write`）。
+打 `v1.0.0` 标签推送到 GitHub，`.github/workflows/release.yml` 会自动构建 `npm pack` 产物并发布为 GitHub Release。凭证优先取 secret `GH_TOKEN`（PAT，`contents:write`），缺省回退内置 `GITHUB_TOKEN`（workflow 已声明 `permissions: contents: write`）。**仓库没有 lockfile，setup-node 不可开 `cache: npm`**（找不到锁文件会直接失败）。
 
 ## 常规注意事项
 
