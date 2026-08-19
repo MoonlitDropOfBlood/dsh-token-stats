@@ -49,11 +49,11 @@ window.__ModuleLoader__.load({
 .ts-legend-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ts-legend-val{color:var(--dsw-alias-label-secondary);white-space:nowrap}
 .ts-heat{stroke:var(--dsw-alias-border-l1);stroke-width:0.5}
-.ts-heat-0{fill:var(--dsw-alias-bg-layer-2);fill:color-mix(in srgb,var(--dsw-alias-border-l1) 45%,transparent)}
-.ts-heat-1{fill:var(--dsw-alias-state-success-primary);opacity:0.3}
-.ts-heat-2{fill:var(--dsw-alias-state-success-primary);opacity:0.5}
-.ts-heat-3{fill:var(--dsw-alias-state-success-primary);opacity:0.75}
-.ts-heat-4{fill:var(--dsw-alias-state-success-primary);opacity:1}
+.ts-heat-0{fill:var(--dsw-alias-bg-layer-2);fill:color-mix(in srgb,var(--dsw-alias-border-l1) 45%,transparent);background:var(--dsw-alias-bg-layer-2);background:color-mix(in srgb,var(--dsw-alias-border-l1) 45%,transparent)}
+.ts-heat-1{fill:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-primary);opacity:0.3}
+.ts-heat-2{fill:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-primary);opacity:0.5}
+.ts-heat-3{fill:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-primary);opacity:0.75}
+.ts-heat-4{fill:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-primary);opacity:1}
 .ts-heat-legend{display:flex;align-items:center;gap:3px}
 .ts-heat-legend-cell{width:10px;height:10px;border-radius:2px}
 .ts-heat-legend-label{color:var(--dsw-alias-label-secondary);font-size:11px;margin:0 6px}
@@ -113,6 +113,10 @@ window.__ModuleLoader__.load({
       const MONTHS = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
 
       function fmtCompact(n) {
+        if (n >= 1e9) {
+          const v = n / 1e9;
+          return (v >= 100 ? Math.round(v) : v.toFixed(1)) + "B";
+        }
         if (n >= 1e6) {
           const v = n / 1e6;
           return (v >= 100 ? Math.round(v) : v.toFixed(1)) + "M";

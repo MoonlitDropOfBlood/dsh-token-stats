@@ -25,6 +25,7 @@
 | 🥧 饼图 | 统计区间内**每个模型的总消耗**占比 + 图例（精确值 + 百分比） |
 | 🔥 GitHub 风格热力图 | 「近一年」每日活跃；**天数随容器宽度自适应**，最多显示 365 天（一年） |
 | 🗂 汇总卡片 | 区间总 Tokens / 输入(含缓存) / 输出 |
+| 💾 本地持久化 | 聚合结果落盘 `<DSH_HOME>/data/dsh-token-stats/stats.json`，冷启动只扫描新会话、秒开；删除该文件可强制全量重扫 |
 | ⏱ 自动刷新 | 页面打开期间每 30s 刷新；历史回填期间每 2s 轮询进度 |
 | 🌗 主题适配 | 全部使用 DSH 设计 token，明暗主题自动跟随 |
 
@@ -74,8 +75,9 @@ node scripts/install.mjs
 ```
 DSH 会话日志（唯一权威数据源）
   ├─ LIVE   : session/event  → assistant/message(usage)   [插件启动后实时累计]
-  ├─ HISTORY: sessionQuery.readSession() → 回填历史        [插件启动时一次性回填]
-  └─ DEDUP  : 按 session+seq 水位线去重，绝不重复计数
+  ├─ HISTORY: sessionQuery.readSession() → 回填历史        [仅扫描从未回填过的会话]
+  ├─ DEDUP  : 按 session+seq 水位线去重，绝不重复计数
+  └─ PERSIST: 聚合 + 水位线落盘 stats.json（防抖写盘 + 停止时 flush）
         │
         ▼
 TokenStatsService.getStats()   ← ctx.remote.tokenStats.getStats()（Client 调用）

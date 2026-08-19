@@ -73,6 +73,7 @@ Node ESM 不支持 Stage 3 装饰器（`@Remote("x")` 直接写会 `SyntaxError`
 - **只有 `assistant/message` 事件带 usage**：`event.data.usage`（TokenUsage）+ `event.data.message.source`（`{ kind: 'model', provider, model }`）给出模型归属。`total = input + output + cacheRead + cacheWrite`（不把 reasoningTokens 重复计入 total）。
 - **HISTORY**：`this.ctx.get("sessionQuery")` → `listSessions()` + `readSession(id)` 一次性回填（并发 4）。只用 `ev.time < 插件启动时间` 之外的全部历史（实际上通过水位线去重，无需按时间切分）。
 - **DEDUP 水位线**：`_watermark: Map<sessionId, maxSeq>`。实时监听和回填两条路径都做 `if (seq <= wm) skip; wm = seq; fold`（同步 check-and-set，单线程下无竞态），**任何一条先到谁计数，绝不重复**。
+- **PERSIST 落盘**：聚合（`_byDay`）、水位线、`_folded`（已完整回填的会话集合）、`_modelMeta` 持久化到 `<DSH_HOME>/data/dsh-token-stats/stats.json`（`DSH_HOME` 读进程环境变量，缺省 `~/.dsh`；会话池是全局的，存储也放全局而非 profile 下）。变更后 1.5s 防抖写盘（tmp+rename 原子替换），`ctx.effect` 的 disposer 里同步 flush。**冷启动跳过 `_folded` 里的会话（不读 `readSession`），只扫新会话**；文件缺失/损坏/version 不匹配时退化为全量扫描。删除该文件可强制全量重扫。
 - 实时监听从插件激活起累计；回填处理插件激活前的历史；两者通过水位线无缝合并。
 
 ### 5. Client 半：bundle 格式
