@@ -19,7 +19,7 @@ dsh-token-stats/
 ├── index.js              # Host 半：TokenStatsService（TypertRemoteService 子类，类插件）
 ├── client.js             # Client 半：window.__ModuleLoader__.load bundle（设置页 Slot UI + Remote 调用）
 ├── typert.host.js        # Typert Host manifest：tokenStats Remote 服务的 schema/调用描述
-├── scripts/install.mjs   # 本地安装脚本：复制到 profile + 写入 patch
+├── cordis.patch.yml      # dsh bundle patch（挂载行）
 ├── .github/workflows/release.yml  # 打 v* 标签时构建并发布 GitHub Release
 ├── AGENTS.md             # 本文件
 ├── README.md
@@ -102,25 +102,28 @@ window.__ModuleLoader__.load({
 - **宽度自适应**用 `ResizeObserver` 监听页面容器，热力图天数由宽度计算（`weeks = min(floor((w - pads)/(cell+gap)), 53)`，`days = min(365, weeks*7)`）。
 - 设置页注册：`ctx.slots.inject("settings.section", () => ctx.slots.register({ name: "settings.section", id: "token-stats", order: 25, label: () => "Token 统计" }, TokenStatsPage))`。
 
-### 6. 本地安装 = 复制包 + composition patch
+### 6. 标准安装 = dsh bundle（package.json 声明 + 包内 cordis.patch.yml）
 
-流程（`scripts/install.mjs` 自动做）：
-1. 把插件包复制到 `<DSH_HOME>/profiles/web/node_modules/dsh-token-stats/`。
-2. 在 `<DSH_HOME>/profiles/web/cordis.patch.yml` 里 **`- insert:`** 新增行（**不要**用普通 `- id:` 覆盖）：
+本插件是**标准 DSH bundle**：`package.json` 的 `dsh.bundle.patch` 指向包内 `cordis.patch.yml`。用官方 `dsh plugin` 命令安装：
+
+1. `dsh plugin --profile web add <本地路径或包>`：pnpm 把插件装成 profile 的 npm 依赖（本地路径走 `link:` 软链，改代码即生效），并把包名追加到 profile `package.json` 的 `dsh.profile.bundles`。
+2. 启动时 DSH 应用包内 `cordis.patch.yml` 的 `- insert:` 行挂载插件（**不要**再在 profile 的 `cordis.patch.yml` 里手工插一行，否则同一 id 重复挂载）：
 
 ```yaml
+# cordis.patch.yml（随包分发）
 - insert:
   - id: token-stats
     name: 'dsh-token-stats'
 ```
 
 3. 重启 DSH。**必须重启**，Host 加载、typert 注册、client bundle 注入都在启动时发生。
+4. 卸载：`dsh plugin --profile web remove dsh-token-stats`（自动从 bundles 列表移除）。
 
 ## 开发 / 验证
 
 ```bash
 npm run check            # node --check index.js client.js typert.host.js
-node scripts/install.mjs # 安装到本机 DSH profile
+dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机 DSH profile
 ```
 
 改插件后**必须重启 DSH 进程**才生效（动态 HMR 不适用于正式安装的插件）。验证：

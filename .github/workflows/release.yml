@@ -76,11 +76,9 @@ jobs:
             - GitHub 风格「近一年」每日活跃热力图（随容器宽度自适应天数，最多 365 天）。
             - 数据来源为 DSH 会话日志（`assistant/message` 的 usage），按天/按模型聚合，历史自动回填。
 
-            ### 📦 安装
+            ### 📦 安装（标准 DSH bundle）
             ```bash
-            git clone <your-repo>.git
-            cd dsh-token-stats
-            node scripts/install.mjs
+            dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-stats/releases/download/v1.2.0/dsh-token-stats-1.2.0.tgz
             # 重启 DSH 后，设置面板出现「Token 统计」页
             ```
           files: artifacts/*

@@ -1,6 +1,6 @@
 {
   "name": "dsh-token-stats",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Token usage statistics for DeepSeek Harness: last-7/30-day per-model daily and total consumption (bar chart + donut), plus a GitHub-style contributions heatmap over the last year.",
   "type": "module",
   "main": "index.js",
@@ -8,15 +8,20 @@
     ".": "./index.js",
     "./client": "./client.js",
     "./typert": "./typert.host.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
     "client.js",
-    "typert.host.js"
+    "typert.host.js",
+    "cordis.patch.yml"
   ],
   "license": "MIT",
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web"
     }
@@ -29,7 +34,6 @@
     "zod": "^4.4.3"
   },
   "scripts": {
-    "install:local": "node scripts/install.mjs",
     "check": "node --check index.js && node --check client.js && node --check typert.host.js",
     "smoke": "node scripts/smoke-store.mjs"
   }
