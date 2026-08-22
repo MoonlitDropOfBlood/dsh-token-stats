@@ -114,7 +114,7 @@ window.__ModuleLoader__.load({
 # cordis.patch.yml（随包分发）
 - insert:
   - id: token-stats
-    name: 'dsh-token-stats'
+    name: '@duke-dsh-plugins/dsh-token-stats'
 ```
 
 3. 重启 DSH。**必须重启**，Host 加载、typert 注册、client bundle 注入都在启动时发生。
