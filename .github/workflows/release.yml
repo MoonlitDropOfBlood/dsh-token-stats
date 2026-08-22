@@ -45,6 +45,28 @@ jobs:
           name: package-tarball
           path: ./*.tgz
 
+  publish-npm:
+    # npm OIDC Trusted Publishing (no static token / no OTP). Requires npm
+    # CLI >= 11.5.1 and Node >= 22.14 (Node 24 bundles npm 11). Configure the
+    # trusted publisher on npmjs.com for this package first (repo
+    # MoonlitDropOfBlood/dsh-token-stats + .github/workflows/release.yml),
+    # then every v* tag push publishes to npm automatically.
+    name: Publish to npm (Trusted Publishing)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm install
+      - run: npm publish
+
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
