@@ -62,7 +62,52 @@ window.__ModuleLoader__.load({
 .ts-loading{display:flex;align-items:center;gap:10px;color:var(--dsw-alias-label-secondary);font-size:13px;padding:24px 0}
 .ts-spinner{width:16px;height:16px;border-radius:50%;border:2px solid var(--dsw-alias-border-l1);border-top-color:var(--dsw-alias-brand-primary);animation:ts-spin .8s linear infinite;flex:none}
 @keyframes ts-spin{to{transform:rotate(360deg)}}
+
+/* Settings nav icon: DSH 0.1.x settings.section only projects id/order/
+   label, and the settings shell paints a generic gear for every external
+   section (client-ui-settings-general's navIcon()). registerSettingsNavIcon
+   marks our own nav row; hide the shell's gear and draw the chart-column
+   Lucide glyph as a currentColor mask so it follows the native nav
+   hover/active colors without changing the shell's 16px icon rhythm. */
+[data-dsh-token-stats-settings-nav]>svg:first-child{display:none}
+[data-dsh-token-stats-settings-nav]::before{content:'';flex:none;width:16px;height:16px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 3v16a2 2 0 0 0 2 2h16'/%3E%3Cpath d='M18 17V9'/%3E%3Cpath d='M13 17V5'/%3E%3Cpath d='M8 17v-3'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 3v16a2 2 0 0 0 2 2h16'/%3E%3Cpath d='M18 17V9'/%3E%3Cpath d='M13 17V5'/%3E%3Cpath d='M8 17v-3'/%3E%3C/svg%3E") center/contain no-repeat}
 `;
+
+    // ---- Settings nav icon --------------------------------------------------
+    // DSH 0.1.x does not yet carry an icon through the settings.section
+    // registration contract: its shell projects only id/order/label and
+    // paints a generic gear for every external section. Mark only this
+    // plugin's localized nav row so the CSS above can replace the fallback
+    // gear; the disposer clears the marker for HMR / plugin disable.
+    const SETTINGS_LABEL = "Token 统计";
+    const SETTINGS_NAV_MARKER = "data-dsh-token-stats-settings-nav";
+
+    function registerSettingsNavIcon(label) {
+      let disposed = false;
+      const sync = function () {
+        if (disposed) return;
+        const currentLabel = String(label).trim();
+        const buttons = document.querySelectorAll('[role="dialog"] nav button');
+        for (let i = 0; i < buttons.length; i++) {
+          const button = buttons[i];
+          const text = button.textContent ? button.textContent.trim() : "";
+          if (currentLabel.length > 0 && text === currentLabel) {
+            button.setAttribute(SETTINGS_NAV_MARKER, "");
+          } else {
+            button.removeAttribute(SETTINGS_NAV_MARKER);
+          }
+        }
+      };
+      sync();
+      const observer = new MutationObserver(sync);
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      return function () {
+        disposed = true;
+        observer.disconnect();
+        const marked = document.querySelectorAll("[" + SETTINGS_NAV_MARKER + "]");
+        for (let i = 0; i < marked.length; i++) marked[i].removeAttribute(SETTINGS_NAV_MARKER);
+      };
+    }
 
     // ---- Client Remote contribution ----------------------------------------
     // The browser-side `remote.tokenStats` service only exists after this
@@ -101,6 +146,10 @@ window.__ModuleLoader__.load({
       styleTag.textContent = CSS;
       document.head.appendChild(styleTag);
       ctx.effect(() => () => styleTag.remove());
+
+      // Mark our settings-nav row so the CSS above replaces the shell's
+      // fallback gear (no icon field exists in settings.section yet).
+      ctx.effect(() => registerSettingsNavIcon(SETTINGS_LABEL));
 
       // ctx.get() reads the service without the property-accessor inject guard.
       const remote = ctx.get("remote.tokenStats");
@@ -615,7 +664,7 @@ window.__ModuleLoader__.load({
       // Settings entry: a full page under the sidebar Settings panel.
       ctx.slots.inject("settings.section", () =>
         ctx.slots.register(
-          { name: "settings.section", id: "token-stats", order: 25, label: () => "Token 统计" },
+          { name: "settings.section", id: "token-stats", order: 25, label: () => SETTINGS_LABEL },
           TokenStatsPage,
         ),
       );
