@@ -81,7 +81,7 @@ const tokenStatsResultSchema = z.union([
 ]);
 
 export const TYPERT = {
-  package: "dsh-token-stats",
+  package: "@duke-dsh-plugins/dsh-token-stats",
   face: "host",
   schemas: [],
   invocations: [
