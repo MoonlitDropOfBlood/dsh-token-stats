@@ -100,7 +100,7 @@ jobs:
 
             ### 📦 安装（标准 DSH bundle）
             ```bash
-            dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-stats/releases/download/v1.3.3/dsh-token-stats-1.3.2.tgz
+            dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-stats/releases/download/v1.3.4/dsh-token-stats-1.3.2.tgz
             # 重启 DSH 后，设置面板出现「Token 统计」页
             ```
           files: artifacts/*

@@ -14,7 +14,7 @@
  * `index.js`.
  */
 window.__ModuleLoader__.load({
-  id: "dsh-token-stats",
+  id: "@duke-dsh-plugins/dsh-token-stats",
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;

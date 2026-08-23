@@ -1,6 +1,6 @@
 {
   "name": "@duke-dsh-plugins/dsh-token-stats",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "description": "Token usage statistics for DeepSeek Harness: last-7/30-day per-model daily and total consumption (bar chart + donut), plus a GitHub-style contributions heatmap over the last year.",
   "repository": {
     "type": "git",
