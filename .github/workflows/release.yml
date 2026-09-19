@@ -102,7 +102,8 @@ jobs:
 
             ### 📦 安装（标准 DSH bundle）
             ```bash
-            dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-stats/releases/download/v1.4.0/dsh-token-stats-1.4.0.tgz
+            # 注意 scoped 包 npm pack 产物名带 scope 前缀
+            dsh plugin --profile web add ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/duke-dsh-plugins-dsh-token-stats-${{ github.ref_name }}.tgz
             # 重启 DSH 后，设置面板出现「Token 统计」页
             ```
           files: artifacts/*

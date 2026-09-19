@@ -163,6 +163,9 @@ dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机
 
 打 `v1.0.0` 标签推送到 GitHub，`.github/workflows/release.yml` 会自动构建 `npm pack` 产物并发布为 GitHub Release。凭证优先取 secret `GH_TOKEN`（PAT，`contents:write`），缺省回退内置 `GITHUB_TOKEN`（workflow 已声明 `permissions: contents: write`）。**仓库没有 lockfile，setup-node 不可开 `cache: npm`**（找不到锁文件会直接失败）。
 
+- **npm 发布走 OIDC Trusted Publishing**（`publish-npm` job，id-token: write），需要在 npmjs.com 给这个包配好 trusted publisher（repo + workflow 路径），打 v* 标签即自动发 npm，无需静态 token。
+- **scoped 包的 npm pack 产物名带 scope 前缀**：`duke-dsh-plugins-dsh-token-stats-<ver>.tgz`。Release 说明里的安装 URL 必须用这个名字——v1.4.0 及之前的 release body 都写成了 `dsh-token-stats-<ver>.tgz`（404），v1.4.0 起 workflow 模板已改为 `${{ github.ref_name }}` 动态拼接正确名；旧 release 的正文要在 GitHub 网页上手工修正。
+
 ## 常规注意事项
 
 - **不要直接编辑 `~/.dsh/profiles/web/cordis.yml`**（那是生成的文件，patch 覆盖在 `cordis.patch.yml`）。

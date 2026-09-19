@@ -43,7 +43,7 @@
 dsh plugin --profile web add /path/to/dsh-token-stats
 
 # 正式发布：从 GitHub Release tarball 安装
-dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-stats/releases/download/v1.4.0/dsh-token-stats-1.4.0.tgz
+dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-stats/releases/download/v1.4.0/duke-dsh-plugins-dsh-token-stats-1.4.0.tgz
 ```
 
 重启 DSH 后，打开 DSH Web UI 的设置（侧栏底部），左侧导航会出现 **Token 统计** 页。
