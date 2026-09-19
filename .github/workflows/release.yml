@@ -96,11 +96,13 @@ jobs:
             ### 功能
             - 近 7 天 / 近 30 天（均含今天）：每日按模型消耗的堆叠柱状图 + 模型总消耗饼图。
             - GitHub 风格「近一年」每日活跃热力图（随容器宽度自适应天数，最多 365 天）。
+            - 💰 套餐余额：会话输入框工具行（模型选择器左侧）内联显示当前 provider 的余额/用量（DeepSeek/OpenRouter 余额，MiniMax/Kimi/智谱 5h+7d 窗口），跟随当前模型自动切换，点击立即刷新（参考 [dsh-musage](https://github.com/Thedeergod666/dsh-musage)，MIT）。
+            - 设置页新增「套餐余额」区块：所有已配置 API Key 的 provider 一行一张余额卡片。
             - 数据来源为 DSH 会话日志（`assistant/message` 的 usage），按天/按模型聚合，历史自动回填。
 
             ### 📦 安装（标准 DSH bundle）
             ```bash
-            dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-stats/releases/download/v1.3.4/dsh-token-stats-1.3.2.tgz
+            dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-stats/releases/download/v1.4.0/dsh-token-stats-1.4.0.tgz
             # 重启 DSH 后，设置面板出现「Token 统计」页
             ```
           files: artifacts/*

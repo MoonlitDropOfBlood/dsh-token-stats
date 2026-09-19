@@ -25,6 +25,14 @@
  *
  * Aggregates are kept per local calendar day per model key
  * (`<provider>::<model>`), which is exactly what the Client charts consume.
+ *
+ * A second Remote method, `getQuota(provider, force)`, reports one provider's
+ * coding-plan quota / balance (minimax / deepseek / kimi / openrouter / zhipu)
+ * for the composer readout — adapted from dsh-musage (MIT). It resolves the
+ * user-configured API key through the `credentials` service, GETs the
+ * provider's endpoint (global fetch, curl via `subprocess` as fallback), and
+ * caches per provider (30 s TTL, exponential backoff on failure). In-memory
+ * only; nothing below touches the persisted stats store.
  */
 
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
@@ -72,6 +80,381 @@ function markRemoteMethod(instance, method, exportName) {
   for (const fn of initializers) fn.call(instance);
 }
 
+/* ======================================================================
+ * Provider quota / balance (套餐余额) — adapted from dsh-musage
+ * (https://github.com/Thedeergod666/dsh-musage, MIT).
+ *
+ * Per provider: resolve the user's already-configured API key through the
+ * DSH `credentials` service (ref naming follows the settings page's
+ * `<ROUTE>_API_KEY` derivation, e.g. minimax-cn → MINIMAX_CN_API_KEY;
+ * deepseek-official ships an explicit apiKeyEnv: DEEPSEEK_API_KEY), GET the
+ * provider's plan/balance endpoint (global fetch first — the host runs on a
+ * modern Node/Electron runtime; curl via the `subprocess` service as the
+ * fallback), parse into a compact `display` payload, and cache per provider
+ * (30 s TTL on success, exponential backoff up to 30 min on failure).
+ * ==================================================================== */
+
+const QUOTA_CACHE_TTL_MS = 30000;
+const QUOTA_BACKOFF_BASE_MS = 5000;
+const QUOTA_BACKOFF_MAX_MS = 30 * 60 * 1000;
+const QUOTA_REQUEST_TIMEOUT_MS = 15000;
+
+const QUOTA_PROVIDERS = {
+  minimax: {
+    refs: ["MINIMAX_CN_API_KEY", "MINIMAX_EN_API_KEY", "MINIMAX_API_KEY"],
+    urls: {
+      MINIMAX_CN_API_KEY: "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains",
+      MINIMAX_EN_API_KEY: "https://api.minimax.io/v1/api/openplatform/coding_plan/remains",
+      MINIMAX_API_KEY: "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains",
+    },
+    parse: parseMinimaxResponse,
+  },
+  deepseek: {
+    refs: ["DEEPSEEK_API_KEY", "DEEPSEEK_OFFICIAL_API_KEY"],
+    urls: {
+      DEEPSEEK_API_KEY: "https://api.deepseek.com/user/balance",
+      DEEPSEEK_OFFICIAL_API_KEY: "https://api.deepseek.com/user/balance",
+    },
+    parse: parseDeepseekBalance,
+  },
+  kimi: {
+    refs: ["KIMI_CODING_API_KEY", "KIMI_API_KEY"],
+    urls: {
+      KIMI_CODING_API_KEY: "https://api.kimi.com/coding/v1/usages",
+      KIMI_API_KEY: "https://api.kimi.com/coding/v1/usages",
+    },
+    parse: parseKimiResponse,
+  },
+  openrouter: {
+    refs: ["OPENROUTER_API_KEY"],
+    urls: {
+      OPENROUTER_API_KEY: "https://openrouter.ai/api/v1/credits",
+    },
+    parse: parseOpenrouterResponse,
+  },
+  zhipu: {
+    refs: ["ZAI_CODING_CN_API_KEY", "ZHIPU_API_KEY"],
+    urls: {
+      ZAI_CODING_CN_API_KEY: "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
+      ZHIPU_API_KEY: "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
+    },
+    parse: parseZhipuResponse,
+    // 智谱特殊: Authorization 不加 "Bearer " 前缀 (来自 Musage zhipu.rs 注释)
+    authStyle: "raw",
+  },
+};
+
+function quotaBackoffMs(streak) {
+  if (streak <= 0) return 0;
+  return Math.min(QUOTA_BACKOFF_MAX_MS, QUOTA_BACKOFF_BASE_MS * Math.pow(2, streak - 1));
+}
+
+function parseEndTime(v) {
+  if (typeof v !== "number") return null;
+  if (v >= 1e12 && v <= 4e12) return v;
+  return Date.now() + v * 1000;
+}
+
+// ----- minimax parser (2026-06-01 起 percent-based / count-based 双 schema) -----
+
+function parseMinimaxResponse(body) {
+  let json;
+  try {
+    json = typeof body === "string" ? JSON.parse(body) : body;
+  } catch {
+    return { ok: false, kind: "parse", message: "JSON 解析失败" };
+  }
+  const baseResp = json && json.base_resp;
+  if (!baseResp || baseResp.status_code !== 0) {
+    return {
+      ok: false,
+      kind: "server_error",
+      message: (baseResp && baseResp.status_msg) || "API 返回 base_resp.status_code != 0",
+    };
+  }
+  const arr = json && json.model_remains;
+  if (!Array.isArray(arr) || arr.length === 0) {
+    return { ok: false, kind: "parse", message: "model_remains 为空" };
+  }
+  const entry = arr.find((r) => r && r.model_name === "general") || arr[0];
+  if (!entry) return { ok: false, kind: "parse", message: "找不到可用 model_remains 条目" };
+
+  const fiveHour = parseMinimaxWindow(entry, "current_interval_", "current_interval_usage_count", "current_interval_total_count", "end_time");
+  const weekly = parseMinimaxWindow(entry, "current_weekly_", "current_weekly_usage_count", "current_weekly_total_count", "weekly_end_time");
+
+  if (!fiveHour && !weekly) {
+    return { ok: false, kind: "schema_unknown", message: "MiniMax 响应字段都不认识" };
+  }
+  return {
+    ok: true,
+    provider: "minimax",
+    display: {
+      fiveHrPct: fiveHour ? Math.max(0, Math.min(100, Math.round(fiveHour.usedPercent))) : null,
+      weeklyPct: weekly ? Math.max(0, Math.min(100, Math.round(weekly.usedPercent))) : null,
+      fiveHrResetsIn: fiveHour ? formatResetsIn(fiveHour.resetsAt) : null,
+      weeklyResetsIn: weekly ? formatResetsIn(weekly.resetsAt) : null,
+    },
+  };
+}
+
+function parseMinimaxWindow(entry, prefix, legacyRemaining, legacyTotal, endTimeKey) {
+  const newPercent = entry[prefix + "remaining_percent"];
+  const newStatus = entry[prefix + "status"];
+  if (typeof newPercent === "number" && newStatus === 1) {
+    return {
+      usedPercent: Math.max(0, 100 - newPercent),
+      resetsAt: parseEndTime(entry[endTimeKey]),
+    };
+  }
+  const total = entry[prefix + "total_count"];
+  const remaining = entry[legacyRemaining] || entry[prefix + "usage_count"];
+  if (typeof total === "number" && total > 0 && typeof remaining === "number") {
+    return {
+      usedPercent: Math.max(0, ((total - remaining) / total) * 100),
+      resetsAt: parseEndTime(entry[endTimeKey]),
+    };
+  }
+  return null;
+}
+
+// ----- deepseek balance parser -----
+//   { "is_available": true,
+//     "balance_infos": [ { "currency": "CNY", "total_balance": "43.97",
+//                            "granted_balance": "0.00", "topped_up_balance": "43.97" } ] }
+
+function parseDeepseekBalance(body) {
+  let json;
+  try {
+    json = typeof body === "string" ? JSON.parse(body) : body;
+  } catch {
+    return { ok: false, kind: "parse", message: "JSON 解析失败" };
+  }
+  if (!json || typeof json !== "object") {
+    return { ok: false, kind: "parse", message: "DeepSeek 响应不是对象" };
+  }
+  if (json.is_available === false) {
+    return { ok: false, kind: "server_error", message: "DeepSeek 账号 is_available=false" };
+  }
+  const infos = json.balance_infos;
+  if (!Array.isArray(infos) || infos.length === 0) {
+    return { ok: false, kind: "parse", message: "balance_infos 字段为空" };
+  }
+  const first = infos[0];
+  const totalStr = first && first.total_balance;
+  if (typeof totalStr !== "string" && typeof totalStr !== "number") {
+    return { ok: false, kind: "parse", message: "balance_infos[0].total_balance 不存在" };
+  }
+  const balance = parseFloat(totalStr);
+  if (!isFinite(balance)) {
+    return { ok: false, kind: "parse", message: "balance 解析成数字失败: " + totalStr };
+  }
+  const currency = (first && first.currency) || "USD";
+  return {
+    ok: true,
+    provider: "deepseek",
+    currency,
+    display: {
+      balanceUsd: balance,
+      balanceText: formatBalance(balance, currency),
+    },
+  };
+}
+
+// ----- kimi parser (5h 窗口 + 7d 窗口) -----
+//   { "limits": [ { "detail": { "limit": 100, "remaining": 72, "resetTime": "..." } } ],
+//     "usage": { "limit": 1000, "remaining": 742, "resetTime": 1749840000 } }
+
+function parseKimiResponse(body) {
+  let json;
+  try {
+    json = typeof body === "string" ? JSON.parse(body) : body;
+  } catch {
+    return { ok: false, kind: "parse", message: "JSON 解析失败" };
+  }
+  if (!json || typeof json !== "object") {
+    return { ok: false, kind: "parse", message: "Kimi 响应不是对象" };
+  }
+  if (json.code && json.code !== 200 && json.code !== "200") {
+    return { ok: false, kind: "server_error", message: "Kimi 返错: " + (json.code || "?") + " · " + (json.msg || "") };
+  }
+  const firstLimit = Array.isArray(json.limits) && json.limits[0] && json.limits[0].detail;
+  const five = firstLimit || {};
+  const fiveHrLimit = Number(five.limit) || 0;
+  const fiveHrRemaining = Number(five.remaining) || 0;
+  const fiveHrResetsAt = parseKimiResetTime(five.resetTime);
+  const week = json.usage || {};
+  const weeklyLimit = Number(week.limit) || 0;
+  const weeklyRemaining = Number(week.remaining) || 0;
+  const weeklyResetsAt = parseKimiResetTime(week.resetTime);
+  if (!fiveHrLimit && !weeklyLimit) {
+    return { ok: false, kind: "parse", message: "Kimi 响应没有 5h/7d 限额" };
+  }
+  return {
+    ok: true,
+    provider: "kimi",
+    display: {
+      fiveHrPct: fiveHrLimit > 0 ? Math.round(((fiveHrLimit - fiveHrRemaining) / fiveHrLimit) * 100) : null,
+      weeklyPct: weeklyLimit > 0 ? Math.round(((weeklyLimit - weeklyRemaining) / weeklyLimit) * 100) : null,
+      fiveHrResetsIn: fiveHrResetsAt ? formatResetsIn(fiveHrResetsAt) : null,
+      weeklyResetsIn: weeklyResetsAt ? formatResetsIn(weeklyResetsAt) : null,
+    },
+  };
+}
+
+function parseKimiResetTime(v) {
+  if (typeof v === "number") {
+    if (v >= 1e12 && v <= 4e12) return v;
+    if (v > 1e9) return v * 1000;
+    return null;
+  }
+  if (typeof v === "string" && v.length > 0) {
+    const t = Date.parse(v);
+    return isNaN(t) ? null : t;
+  }
+  return null;
+}
+
+// ----- openrouter parser (total_credits - total_usage) -----
+
+function parseOpenrouterResponse(body) {
+  let json;
+  try {
+    json = typeof body === "string" ? JSON.parse(body) : body;
+  } catch {
+    return { ok: false, kind: "parse", message: "JSON 解析失败" };
+  }
+  if (!json || typeof json !== "object") {
+    return { ok: false, kind: "parse", message: "OpenRouter 响应不是对象" };
+  }
+  const data = json.data;
+  if (!data || typeof data !== "object") {
+    return { ok: false, kind: "parse", message: "data 字段缺失" };
+  }
+  const total = Number(data.total_credits);
+  const used = Number(data.total_usage);
+  if (!isFinite(total) || !isFinite(used)) {
+    return { ok: false, kind: "parse", message: "total_credits / total_usage 不是数字" };
+  }
+  const remaining = total - used;
+  return {
+    ok: true,
+    provider: "openrouter",
+    currency: "USD",
+    display: {
+      balanceUsd: remaining,
+      balanceText: formatBalance(remaining, "USD"),
+    },
+  };
+}
+
+// ----- zhipu (智谱 GLM Coding Plan) parser -----
+//   { "code": 200, "success": true,
+//     "data": { "limits": [ { "type": "CREDIT_LIMIT", "unit": 3, "usage": 2000,
+//                "remaining": 0, "percentage": 100, "nextResetTime": 1786969101067 }, ... ] } }
+// unit=3 是 5h 窗口, unit=6 是周窗口. percentage 直接是已用 0-100 (服务器算好).
+
+function parseZhipuResponse(body) {
+  let json;
+  try {
+    json = typeof body === "string" ? JSON.parse(body) : body;
+  } catch {
+    return { ok: false, kind: "parse", message: "JSON 解析失败" };
+  }
+  if (!json || typeof json !== "object") {
+    return { ok: false, kind: "parse", message: "智谱响应不是对象" };
+  }
+  if (json.success === false) {
+    return { ok: false, kind: "server_error", message: "智谱 success=false · " + (json.msg || "") };
+  }
+  const data = json.data;
+  if (!data || !Array.isArray(data.limits)) {
+    return { ok: false, kind: "parse", message: "data.limits 缺失" };
+  }
+  const fiveHr = data.limits.find((l) => l && (l.unit === 3 || l.unit === "3"));
+  const weekly = data.limits.find((l) => l && (l.unit === 6 || l.unit === "6"));
+  if (!fiveHr && !weekly) {
+    return { ok: false, kind: "parse", message: "找不到 unit=3 (5h) 或 unit=6 (周) 的 limit" };
+  }
+  function pickWindow(w) {
+    if (!w) return null;
+    const limit = Number(w.usage) || 0;
+    const remaining = Number(w.remaining) || 0;
+    const pct = typeof w.percentage === "number" ? w.percentage : limit > 0 ? Math.round(((limit - remaining) / limit) * 100) : null;
+    const resetsAt = parseEndTime(w.nextResetTime);
+    return { usedPercent: pct, resetsAt };
+  }
+  const f = pickWindow(fiveHr);
+  const w = pickWindow(weekly);
+  return {
+    ok: true,
+    provider: "zhipu",
+    display: {
+      fiveHrPct: f ? f.usedPercent : null,
+      weeklyPct: w ? w.usedPercent : null,
+      fiveHrResetsIn: f && f.resetsAt ? formatResetsIn(f.resetsAt) : null,
+      weeklyResetsIn: w && w.resetsAt ? formatResetsIn(w.resetsAt) : null,
+    },
+  };
+}
+
+function formatBalance(n, currency) {
+  const symbol = currency === "CNY" ? "¥" : currency === "USD" ? "$" : "";
+  return symbol + (n >= 100 ? n.toFixed(0) : n.toFixed(2));
+}
+
+function formatResetsIn(resetsAtMs) {
+  if (typeof resetsAtMs !== "number" || !resetsAtMs) return "";
+  const ms = resetsAtMs - Date.now();
+  if (ms <= 0) return "即将重置";
+  const totalMin = Math.floor(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h > 0) return h + "h" + m + "m 后重置";
+  return m + "m 后重置";
+}
+
+function classifyQuotaHttpStatus(status) {
+  if (status === 429) return "rate_limited";
+  if (status === 401 || status === 403) return "auth_failed";
+  return "server_error";
+}
+
+function parseCurlOutput(rawText) {
+  if (typeof rawText !== "string") return { body: "", statusCode: 0 };
+  const lastNl = rawText.lastIndexOf("\n");
+  if (lastNl < 0) return { body: rawText, statusCode: 0 };
+  const body = rawText.slice(0, lastNl);
+  const statusCode = parseInt(rawText.slice(lastNl + 1).trim(), 10);
+  if (isNaN(statusCode)) return { body: rawText, statusCode: 0 };
+  return { body, statusCode };
+}
+
+/** Trim a parser result to the exact wire shape declared in typert.host.js. */
+function quotaWireValue(parsed) {
+  if (!parsed || parsed.ok !== true) {
+    return {
+      ok: false,
+      provider: (parsed && parsed.provider) || "",
+      kind: (parsed && parsed.kind) || "other",
+      message: (parsed && parsed.message) || "未知错误",
+    };
+  }
+  const d = parsed.display || {};
+  return {
+    ok: true,
+    provider: parsed.provider,
+    display: {
+      fiveHrPct: typeof d.fiveHrPct === "number" && isFinite(d.fiveHrPct) ? d.fiveHrPct : null,
+      weeklyPct: typeof d.weeklyPct === "number" && isFinite(d.weeklyPct) ? d.weeklyPct : null,
+      fiveHrResetsIn: typeof d.fiveHrResetsIn === "string" && d.fiveHrResetsIn ? d.fiveHrResetsIn : null,
+      weeklyResetsIn: typeof d.weeklyResetsIn === "string" && d.weeklyResetsIn ? d.weeklyResetsIn : null,
+      balanceText: typeof d.balanceText === "string" && d.balanceText ? d.balanceText : null,
+      balanceUsd: typeof d.balanceUsd === "number" && isFinite(d.balanceUsd) ? d.balanceUsd : null,
+      currency: typeof parsed.currency === "string" ? parsed.currency : null,
+    },
+  };
+}
+
 export class TokenStatsService extends TypertRemoteService {
   /**
    * No hard service dependencies: `sessionQuery` is read through `ctx.get()`
@@ -95,6 +478,8 @@ export class TokenStatsService extends TypertRemoteService {
    */
   [Service.init]() {
     markRemoteMethod(this, "getStats", "getStats");
+    markRemoteMethod(this, "getQuota", "getQuota");
+    markRemoteMethod(this, "getAllQuotas", "getAllQuotas");
 
     /** dayKey ('YYYY-MM-DD', local) -> Map<modelKey, day aggregate>. */
     this._byDay = new Map();
@@ -108,6 +493,12 @@ export class TokenStatsService extends TypertRemoteService {
     this._dirty = false;
     this._saveTimer = null;
     this._saving = false;
+
+    // Quota fetch state: per-provider cache entries + the credential ref that
+    // last resolved for each provider. In-memory only (no persistence).
+    this._quotaCache = Object.create(null);
+    this._quotaActiveRef = Object.create(null);
+    this._curlPath = null;
 
     // Restore the previous run's aggregates so a cold start only scans new sessions.
     this._loadStore();
@@ -449,6 +840,206 @@ export class TokenStatsService extends TypertRemoteService {
         models,
       },
     };
+  }
+
+  // ---- quota / balance (套餐余额) --------------------------------------------
+
+  /**
+   * Resolve the API key for one provider through the DSH credentials seam.
+   * Ref candidates follow the settings page's `<ROUTE>_API_KEY` derivation and
+   * each provider's shipped default `apiKeyEnv`; without the credentials
+   * service (headless deployment) the process environment is consulted.
+   */
+  async _quotaApiKey(provider) {
+    const cfg = QUOTA_PROVIDERS[provider];
+    if (!cfg) return { ref: null, key: null };
+    const credentials = this.ctx.get("credentials");
+    const candidates = this._quotaActiveRef[provider]
+      ? [this._quotaActiveRef[provider], ...cfg.refs.filter((r) => r !== this._quotaActiveRef[provider])]
+      : cfg.refs;
+    for (const ref of candidates) {
+      try {
+        if (credentials && typeof credentials.resolve === "function") {
+          const hit = await credentials.resolve(ref);
+          if (hit && hit.value) {
+            this._quotaActiveRef[provider] = ref;
+            return { ref, key: hit.value };
+          }
+        } else if (typeof process !== "undefined" && process.env && process.env[ref]) {
+          this._quotaActiveRef[provider] = ref;
+          return { ref, key: process.env[ref] };
+        }
+      } catch (e) {
+        /* try the next ref */
+      }
+    }
+    return { ref: null, key: null };
+  }
+
+  async _resolveCurl() {
+    if (this._curlPath) return this._curlPath;
+    const subprocess = this.ctx.get("subprocess");
+    if (!subprocess || typeof subprocess.resolveExecutable !== "function") {
+      throw new Error("subprocess service 不可用, 且宿主无全局 fetch");
+    }
+    this._curlPath = await subprocess.resolveExecutable("curl");
+    return this._curlPath;
+  }
+
+  /** curl fallback for hosts without a global fetch (same shape as musage). */
+  async _curlGet(url, key, authStyle) {
+    const subprocess = this.ctx.get("subprocess");
+    if (!subprocess || typeof subprocess.spawn !== "function") {
+      return { ok: false, kind: "network", message: "subprocess service 不可用, 且宿主无全局 fetch" };
+    }
+    const c = await this._resolveCurl();
+    const authHeader = authStyle === "raw" ? "Authorization: " + key : "Authorization: Bearer " + key;
+    const handle = subprocess.spawn({
+      argv: [
+        c, "-sS",
+        "--max-time", String(Math.floor(QUOTA_REQUEST_TIMEOUT_MS / 1000)),
+        "-w", "\n%{http_code}",
+        "-H", authHeader,
+        "-H", "Accept: application/json",
+        url,
+      ],
+      cwd: "/",
+      stdio: {
+        stdin: "ignore",
+        stdout: { maxBytes: 8 * 1024 * 1024 },
+        stderr: { maxBytes: 64 * 1024 },
+      },
+      graceMs: QUOTA_REQUEST_TIMEOUT_MS,
+    });
+    const outcome = await handle.done;
+    const stdout = handle.collected && handle.collected.stdout
+      ? handle.collected.stdout.readFrom(0)
+      : { text: "" };
+    const stderr = handle.collected && handle.collected.stderr
+      ? handle.collected.stderr.readFrom(0)
+      : { text: "" };
+    if (outcome.exitCode !== 0) {
+      return { ok: false, kind: "network", message: "curl 退出 " + outcome.exitCode + " · " + stderr.text.slice(0, 200) };
+    }
+    const { body, statusCode } = parseCurlOutput(stdout.text);
+    if (statusCode === 0) {
+      return { ok: false, kind: "network", message: "curl 输出没拿到 HTTP 状态: " + stdout.text.slice(0, 200) };
+    }
+    if (statusCode !== 200) {
+      return {
+        ok: false,
+        kind: classifyQuotaHttpStatus(statusCode),
+        httpStatus: statusCode,
+        message: "HTTP " + statusCode + " · " + body.slice(0, 200),
+      };
+    }
+    return { ok: true, body };
+  }
+
+  /** GET one provider endpoint with its API key; fetch first, curl fallback. */
+  async _httpGet(url, key, authStyle) {
+    if (typeof fetch === "function") {
+      try {
+        const res = await fetch(url, {
+          method: "GET",
+          headers: {
+            authorization: authStyle === "raw" ? key : "Bearer " + key,
+            accept: "application/json",
+          },
+          signal: AbortSignal.timeout(QUOTA_REQUEST_TIMEOUT_MS),
+        });
+        const body = await res.text();
+        if (res.status !== 200) {
+          return {
+            ok: false,
+            kind: classifyQuotaHttpStatus(res.status),
+            httpStatus: res.status,
+            message: "HTTP " + res.status + " · " + body.slice(0, 200),
+          };
+        }
+        return { ok: true, body };
+      } catch (e) {
+        return { ok: false, kind: "network", message: "fetch 失败: " + String((e && e.message) || e) };
+      }
+    }
+    return this._curlGet(url, key, authStyle);
+  }
+
+  async _fetchProviderQuota(provider) {
+    const cfg = QUOTA_PROVIDERS[provider];
+    if (!cfg) {
+      return { ok: false, provider, kind: "other", message: "未知 provider: " + provider };
+    }
+    const { ref, key } = await this._quotaApiKey(provider);
+    if (!key) {
+      return {
+        ok: false,
+        provider,
+        kind: "unconfigured",
+        message: "未配置 " + provider + " API Key (在 DSH 模型设置里配置对应 provider)",
+      };
+    }
+    const url = cfg.urls[ref] || cfg.urls[cfg.refs[0]];
+    const raw = await this._httpGet(url, key, cfg.authStyle);
+    if (!raw.ok) return { ...raw, provider };
+    return cfg.parse(raw.body);
+  }
+
+  /**
+   * Cached per-provider quota read. Success caches for 30 s; failures cache
+   * with exponential backoff (5 s → 30 min cap) so a broken provider is not
+   * hammered. `force` drops the cached entry before reading (手动刷新).
+   */
+  async _getQuotaCached(provider, force) {
+    if (force) this._quotaCache[provider] = null;
+    const c = this._quotaCache[provider];
+    if (c && c.expiresAt > Date.now()) return c.value;
+    const value = quotaWireValue(await this._fetchProviderQuota(provider));
+    if (value.ok) {
+      this._quotaCache[provider] = { value, expiresAt: Date.now() + QUOTA_CACHE_TTL_MS, streak: 0 };
+    } else {
+      const streak = (c ? c.streak : 0) + 1;
+      this._quotaCache[provider] = { value, expiresAt: Date.now() + quotaBackoffMs(streak), streak };
+    }
+    return value;
+  }
+
+  /**
+   * Plan quota / balance for one provider (`minimax` | `deepseek` | `kimi` |
+   * `openrouter` | `zhipu`). The composer readout in the Client half calls
+   * this for the session's active provider (and on click with force=true).
+   */
+  async getQuota(provider, force) {
+    const p = typeof provider === "string" ? provider : "";
+    if (!QUOTA_PROVIDERS[p]) {
+      return { ok: true, value: { ok: false, provider: p, kind: "other", message: "未知 provider: " + p } };
+    }
+    try {
+      return { ok: true, value: await this._getQuotaCached(p, force === true) };
+    } catch (e) {
+      return { ok: true, value: { ok: false, provider: p, kind: "other", message: String((e && e.message) || e) } };
+    }
+  }
+
+  /**
+   * Quota snapshot for every supported provider at once (设置页余额区块).
+   * Providers are queried in parallel; each entry is the same wire value
+   * getQuota returns. `force` bypasses every provider's cache.
+   */
+  async getAllQuotas(force) {
+    const names = Object.keys(QUOTA_PROVIDERS);
+    const values = await Promise.all(
+      names.map(async (p) => {
+        try {
+          return await this._getQuotaCached(p, force === true);
+        } catch (e) {
+          return quotaWireValue({ ok: false, provider: p, kind: "other", message: String((e && e.message) || e) });
+        }
+      }),
+    );
+    const quotas = {};
+    for (let i = 0; i < names.length; i++) quotas[names[i]] = values[i];
+    return { ok: true, value: { quotas } };
   }
 }
 

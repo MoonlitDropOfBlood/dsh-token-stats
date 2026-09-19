@@ -16,3 +16,6 @@ Thumbs.db
 
 # Local scratch
 *.log
+
+# Reference checkouts (third-party, read-only)
+.ref/

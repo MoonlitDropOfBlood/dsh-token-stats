@@ -9,9 +9,14 @@
  *   - a GitHub-contributions-style heatmap whose day range adapts to the
  *     container width (capped at one year / 365 days).
  *
+ * It also registers a compact 套餐余额/用量 readout in the composer tool row
+ * (`conversation.input.right`, immediately left of the model select — the
+ * same seat dsh-musage uses), following the session's active provider and
+ * polling `tokenStats.getQuota` (click forces a cache-bypassing refresh).
+ *
  * Host communication goes through the `tokenStats` Remote namespace
- * (`ctx.remote.tokenStats.getStats()`), published by the Host half in
- * `index.js`.
+ * (`ctx.remote.tokenStats.getStats()/getQuota()`), published by the Host half
+ * in `index.js`.
  */
 window.__ModuleLoader__.load({
   id: "@duke-dsh-plugins/dsh-token-stats",
@@ -49,6 +54,26 @@ window.__ModuleLoader__.load({
 .ts-legend-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ts-legend-val{color:var(--dsw-alias-label-secondary);white-space:nowrap}
 .ts-heat{stroke:var(--dsw-alias-border-l1);stroke-width:0.5}
+.ts-quota{position:relative;display:inline-flex}
+.ts-quota-pop{position:absolute;bottom:calc(100% + 8px);right:0;width:230px;box-sizing:border-box;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;box-shadow:var(--dsw-elevation-soft,0 6px 24px rgba(0,0,0,0.18));padding:10px 12px;display:flex;flex-direction:column;gap:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);z-index:60;pointer-events:none;animation:ts-pop-in .12s ease-out}
+.ts-quota-pop-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-weight:600;font-size:12px}
+.ts-quota-pop-sub{color:var(--dsw-alias-label-secondary);font-size:11px}
+.ts-quota-pop-row{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--dsw-alias-label-secondary)}
+.ts-quota-pop-row b{color:var(--dsw-alias-label-primary);font-weight:600;font-variant-numeric:tabular-nums}
+.ts-quota-pop-bar{height:4px;border-radius:2px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}
+.ts-quota-pop-bar i{display:block;height:100%;border-radius:2px;background:var(--dsw-alias-state-business-primary,var(--dsh-accent,#4D6BFE))}
+.ts-quota-pop-err{color:var(--dsw-alias-state-error-primary,#e5534b);word-break:break-all}
+@keyframes ts-pop-in{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+.ts-quota-card{display:flex;flex-direction:column;gap:6px}
+.ts-quota-list{display:flex;flex-direction:column;gap:10px}
+.ts-quota-list .ts-card{width:100%;box-sizing:border-box}
+.ts-quota-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.ts-quota-card-name{font-size:13px;font-weight:600;line-height:20px}
+.ts-quota-card-status{font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary)}
+.ts-quota-card-status.ts-quota-err{color:var(--dsw-alias-state-error-primary,#e5534b)}
+.ts-quota-card-value{font-size:18px;font-weight:600;line-height:26px;font-variant-numeric:tabular-nums}
+.ts-quota-card-bar{height:4px;border-radius:2px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}
+.ts-quota-card-bar i{display:block;height:100%;border-radius:2px;background:var(--dsw-alias-state-business-primary,var(--dsh-accent,#4D6BFE))}
 .ts-heat-0{fill:var(--dsw-alias-bg-layer-2);fill:color-mix(in srgb,var(--dsw-alias-border-l1) 45%,transparent);background:var(--dsw-alias-bg-layer-2);background:color-mix(in srgb,var(--dsw-alias-border-l1) 45%,transparent)}
 .ts-heat-1{fill:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-primary);opacity:0.3}
 .ts-heat-2{fill:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-primary);opacity:0.5}
@@ -131,6 +156,52 @@ window.__ModuleLoader__.load({
           result: {
             mode: "strict",
             typeSymbol: "dsh-token-stats#TokenStatsResult",
+            schema: passthrough(),
+          },
+        },
+        {
+          id: "dsh-token-stats#tokenStats/getQuota",
+          service: "tokenStats",
+          namespace: "tokenStats",
+          method: "getQuota",
+          invocation: { kind: "direct" },
+          parameters: [
+            {
+              name: "provider",
+              wire: "provider",
+              source: "json",
+              codec: { mode: "strict", typeSymbol: "dsh-token-stats#tokenStats/getQuota:provider", schema: passthrough() },
+            },
+            {
+              name: "force",
+              wire: "force",
+              source: "json",
+              codec: { mode: "strict", typeSymbol: "dsh-token-stats#tokenStats/getQuota:force", schema: passthrough() },
+            },
+          ],
+          result: {
+            mode: "strict",
+            typeSymbol: "dsh-token-stats#TokenStatsQuotaResult",
+            schema: passthrough(),
+          },
+        },
+        {
+          id: "dsh-token-stats#tokenStats/getAllQuotas",
+          service: "tokenStats",
+          namespace: "tokenStats",
+          method: "getAllQuotas",
+          invocation: { kind: "direct" },
+          parameters: [
+            {
+              name: "force",
+              wire: "force",
+              source: "json",
+              codec: { mode: "strict", typeSymbol: "dsh-token-stats#tokenStats/getAllQuotas:force", schema: passthrough() },
+            },
+          ],
+          result: {
+            mode: "strict",
+            typeSymbol: "dsh-token-stats#TokenStatsAllQuotasResult",
             schema: passthrough(),
           },
         },
@@ -513,6 +584,365 @@ window.__ModuleLoader__.load({
         );
       }
 
+      // ---- Composer quota readout ------------------------------------------
+      // 套餐余额/用量读数, 显示位置与 dsh-musage 一致: `conversation.input.right`
+      // 槽位 (composer 卡内工具行, 紧贴 model select 左侧; margin-left:auto 在
+      // .trailing flex 容器内把读数推到最右). 跟随当前会话的模型选择
+      // (modelDirectories.directoryFor(sessionId).store), 切 provider 自动重取.
+      const QUOTA_REFRESH_MS = 60000;
+
+      // DSH provider route id → 内部 provider key (与 host 半 QUOTA_PROVIDERS 对应).
+      const PROVIDER_ALIASES = {
+        "minimax-cn": "minimax",
+        "minimax-en": "minimax",
+        "minimax": "minimax",
+        "deepseek": "deepseek",
+        "deepseek-official": "deepseek",
+        "kimi-coding": "kimi",
+        "kimi": "kimi",
+        "openrouter": "openrouter",
+        "zai-coding-cn": "zhipu",
+        "zhipu": "zhipu",
+      };
+      const QUOTA_PROVIDER_ORDER = ["minimax", "deepseek", "kimi", "openrouter", "zhipu"];
+
+      function quotaProviderLabel(p) {
+        if (p === "minimax") return "MiniMax";
+        if (p === "deepseek") return "DeepSeek";
+        if (p === "kimi") return "Kimi";
+        if (p === "openrouter") return "OpenRouter";
+        if (p === "zhipu") return "Zhipu";
+        return p;
+      }
+
+      /** 双层信封解包: remote 网关返回 res.value = host 方法的 { ok, value }. */
+      function unwrapRemote(res) {
+        const v = res && res.value;
+        if (v && typeof v === "object" && v.ok === true && v.value && typeof v.value === "object") return v.value;
+        if (v && typeof v === "object" && v.ok === false && v.error) {
+          return { ok: false, kind: "other", message: (v.error && (v.error.message || v.error.code)) || "获取失败" };
+        }
+        return v;
+      }
+
+      function quotaValueSpans(provider, d) {
+        const strong = { fontWeight: 600, color: "var(--dsw-alias-label-primary, #eee)" };
+        const labelEl = React.createElement("span", { key: "p", style: { fontWeight: 500 } }, quotaProviderLabel(provider));
+        if (provider === "deepseek" || provider === "openrouter") {
+          const txt = d.balanceText || (typeof d.balanceUsd === "number" ? "$" + d.balanceUsd.toFixed(2) : "—");
+          return [labelEl, React.createElement("span", { key: "b", style: strong }, txt)];
+        }
+        // minimax / kimi / zhipu: 5h + 7d 窗口已用百分比
+        const five = typeof d.fiveHrPct === "number" ? d.fiveHrPct + "%" : "—";
+        const week = typeof d.weeklyPct === "number" ? d.weeklyPct + "%" : "—";
+        return [
+          labelEl,
+          React.createElement("span", { key: "5", style: strong }, "5h " + five),
+          React.createElement("span", { key: "sep", style: { opacity: 0.5, fontSize: 10 } }, "|"),
+          React.createElement("span", { key: "7", style: strong }, "7d " + week),
+        ];
+      }
+
+      /** 自定义悬停面板 (替代原生 title): 结构化展示余额/窗口用量 + 进度条. */
+      function QuotaHoverCard(props) {
+        const label = quotaProviderLabel(props.provider);
+        const rows = [];
+        if (props.ok && props.display) {
+          const d = props.display;
+          if (typeof d.balanceText === "string" && d.balanceText) {
+            rows.push(
+              React.createElement(
+                "div", { key: "bal", className: "ts-quota-pop-row" },
+                React.createElement("span", null, "账户余额" + (d.currency ? " (" + d.currency + ")" : "")),
+                React.createElement("b", null, d.balanceText),
+              ),
+            );
+          }
+          const windows = [
+            ["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn],
+            ["7d 窗口", d.weeklyPct, d.weeklyResetsIn],
+          ];
+          for (const w of windows) {
+            if (typeof w[1] !== "number") continue;
+            rows.push(
+              React.createElement(
+                "div", { key: w[0], style: { display: "flex", flexDirection: "column", gap: 4 } },
+                React.createElement(
+                  "div", { className: "ts-quota-pop-row" },
+                  React.createElement("span", null, w[0] + "已用"),
+                  React.createElement("b", null, w[1] + "%" + (w[2] ? " · " + w[2] : "")),
+                ),
+                React.createElement(
+                  "div", { className: "ts-quota-pop-bar" },
+                  React.createElement("i", { style: { width: Math.max(0, Math.min(100, w[1])) + "%" } }),
+                ),
+              ),
+            );
+          }
+        } else {
+          rows.push(React.createElement("div", { key: "err", className: "ts-quota-pop-err" }, props.message || "获取失败"));
+        }
+        return React.createElement(
+          "div", { className: "ts-quota-pop" },
+          React.createElement(
+            "div", { className: "ts-quota-pop-head" },
+            React.createElement("span", null, label),
+            React.createElement("span", { className: "ts-quota-pop-sub" }, "套餐余额"),
+          ),
+          ...rows,
+        );
+      }
+
+      function QuotaReadout(props) {
+        const models = props.models;
+        const sessionId = props.sessionId;
+        const [provider, setProvider] = React.useState(null);
+        const [state, setState] = React.useState({ loaded: false, ok: false });
+        const [hover, setHover] = React.useState(false);
+        const loadRef = React.useRef(null);
+
+        // 订阅会话级 model directory, 提取 active provider route id.
+        React.useEffect(() => {
+          if (!models || !sessionId) {
+            setProvider(null);
+            return undefined;
+          }
+          let directory = null;
+          try {
+            directory = models.directoryFor(sessionId);
+          } catch (e) {
+            directory = null;
+          }
+          if (!directory || !directory.store) {
+            setProvider(null);
+            return undefined;
+          }
+          const update = () => {
+            try {
+              const snap = directory.store.getSnapshot();
+              const route = snap && snap.current && snap.current.provider;
+              setProvider(route ? PROVIDER_ALIASES[route] || null : null);
+            } catch (e) {
+              setProvider(null);
+            }
+          };
+          update();
+          const stop = directory.store.subscribe(update);
+          return () => {
+            try {
+              stop();
+            } catch (e) { /* ignore */ }
+          };
+        }, [models, sessionId]);
+
+        // provider 切换时重取; 60s 轮询; 点击 = 绕过缓存强制刷新.
+        React.useEffect(() => {
+          loadRef.current = null;
+          if (!provider) {
+            setState({ loaded: false, ok: false });
+            return undefined;
+          }
+          let alive = true;
+          const load = async (force) => {
+            try {
+              const payload = unwrapRemote(await remote.getQuota(provider, force === true));
+              if (!alive) return;
+              if (payload && typeof payload === "object" && typeof payload.ok === "boolean") {
+                setState({ loaded: true, ...payload });
+              } else {
+                setState({ loaded: true, ok: false, kind: "other", message: "响应格式异常" });
+              }
+            } catch (e) {
+              if (alive) setState({ loaded: true, ok: false, kind: "network", message: String((e && e.message) || e) });
+            }
+          };
+          loadRef.current = load;
+          load(false);
+          const t = setInterval(() => load(false), QUOTA_REFRESH_MS);
+          return () => {
+            alive = false;
+            clearInterval(t);
+          };
+        }, [provider]);
+
+        // 当前路由不在支持列表 → 完全不占位.
+        if (!provider) return null;
+
+        const label = quotaProviderLabel(provider);
+        const containerStyle = {
+          display: "inline-flex",
+          alignItems: "center",
+          marginLeft: "auto",
+          gap: 4,
+          padding: "2px 8px",
+          fontSize: 11,
+          fontVariantNumeric: "tabular-nums",
+          userSelect: "none",
+          cursor: "pointer",
+          color: "var(--dsw-alias-label-secondary, #888)",
+        };
+        const hoverProps = {
+          onMouseEnter: () => setHover(true),
+          onMouseLeave: () => setHover(false),
+        };
+        const onRefresh = () => {
+          const fn = loadRef.current;
+          if (fn) fn(true);
+        };
+        const card = hover
+          ? React.createElement(QuotaHoverCard, {
+              provider,
+              ok: state.ok === true,
+              display: state.display || null,
+              message: state.message || null,
+            })
+          : null;
+
+        if (!state.loaded) {
+          return React.createElement(
+            "div",
+            Object.assign({ className: "ts-quota", style: containerStyle }, hoverProps),
+            React.createElement("span", { style: { fontWeight: 500 } }, label),
+            React.createElement("span", { style: { opacity: 0.6, fontSize: 10 } }, "···"),
+          );
+        }
+
+        if (!state.ok) {
+          return React.createElement(
+            "div",
+            Object.assign(
+              {
+                className: "ts-quota",
+                style: Object.assign({}, containerStyle, {
+                  color: "var(--dsw-alias-state-warning-primary, var(--dsh-text-warning, #f5a623))",
+                }),
+                onClick: onRefresh,
+              },
+              hoverProps,
+            ),
+            React.createElement("span", { style: { fontWeight: 500 } }, label),
+            React.createElement("span", { style: { fontWeight: 600 } }, "⚠"),
+            card,
+          );
+        }
+
+        const d = state.display || {};
+        return React.createElement(
+          "div",
+          Object.assign({ className: "ts-quota", style: containerStyle, onClick: onRefresh }, hoverProps),
+          ...quotaValueSpans(provider, d),
+          card,
+        );
+      }
+
+      // ---- Settings 页余额区块 ----------------------------------------------
+      // 展示所有已配置 API Key 的 provider 余额卡片; 全部未配置时整块不渲染.
+
+      function QuotaCard(props) {
+        const p = props.provider;
+        const v = props.value;
+        const label = quotaProviderLabel(p);
+        if (!v || v.ok !== true) {
+          const msg = (v && v.message) || "获取失败";
+          return React.createElement(
+            "div", { className: "ts-card ts-quota-card" },
+            React.createElement(
+              "div", { className: "ts-quota-card-head" },
+              React.createElement("span", { className: "ts-quota-card-name" }, label),
+              React.createElement("span", { className: "ts-quota-card-status ts-quota-err" }, "获取失败"),
+            ),
+            React.createElement("div", { className: "ts-card-label", title: msg }, msg),
+          );
+        }
+        const d = v.display || {};
+        if (typeof d.balanceText === "string" && d.balanceText) {
+          return React.createElement(
+            "div", { className: "ts-card ts-quota-card" },
+            React.createElement(
+              "div", { className: "ts-quota-card-head" },
+              React.createElement("span", { className: "ts-quota-card-name" }, label),
+              React.createElement("span", { className: "ts-quota-card-status" }, "账户余额" + (d.currency ? " · " + d.currency : "")),
+            ),
+            React.createElement("div", { className: "ts-quota-card-value" }, d.balanceText),
+          );
+        }
+        const windows = [
+          ["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn],
+          ["7d 窗口", d.weeklyPct, d.weeklyResetsIn],
+        ];
+        return React.createElement(
+          "div", { className: "ts-card ts-quota-card" },
+          React.createElement(
+            "div", { className: "ts-quota-card-head" },
+            React.createElement("span", { className: "ts-quota-card-name" }, label),
+            React.createElement("span", { className: "ts-quota-card-status" }, "套餐用量"),
+          ),
+          windows.map((w) =>
+            typeof w[1] !== "number"
+              ? null
+              : React.createElement(
+                  "div", { key: w[0], style: { display: "flex", flexDirection: "column", gap: 4 } },
+                  React.createElement(
+                    "div", { className: "ts-quota-pop-row" },
+                    React.createElement("span", null, w[0] + "已用"),
+                    React.createElement("b", null, w[1] + "%" + (w[2] ? " · " + w[2] : "")),
+                  ),
+                  React.createElement(
+                    "div", { className: "ts-quota-card-bar" },
+                    React.createElement("i", { style: { width: Math.max(0, Math.min(100, w[1])) + "%" } }),
+                  ),
+                ),
+          ),
+        );
+      }
+
+      function QuotaSection() {
+        const [quotas, setQuotas] = React.useState(null);
+        const load = React.useCallback(async (force) => {
+          try {
+            const payload = unwrapRemote(await remote.getAllQuotas(force === true));
+            if (payload && typeof payload === "object" && payload.quotas && typeof payload.quotas === "object") {
+              setQuotas(payload.quotas);
+            }
+          } catch (e) { /* 余额区块失败不影响统计页 */ }
+        }, []);
+        React.useEffect(() => {
+          load(false);
+          const t = setInterval(() => load(false), QUOTA_REFRESH_MS);
+          return () => clearInterval(t);
+        }, [load]);
+
+        if (!quotas) return null;
+        const names = QUOTA_PROVIDER_ORDER.filter((p) => quotas[p]);
+        // 只展示已配置 API Key 的 provider; 全部未配置 → 整块不渲染.
+        const configured = names.filter((p) => !(quotas[p] && quotas[p].ok === false && quotas[p].kind === "unconfigured"));
+        if (configured.length === 0) return null;
+        return React.createElement(
+          "div", { className: "ts-block" },
+          React.createElement(
+            "div", { className: "ts-block-title" },
+            "套餐余额 · 已配置 provider",
+            " ",
+            React.createElement(
+              "a",
+              {
+                href: "#",
+                style: { color: "inherit", textDecoration: "none", cursor: "pointer" },
+                onClick: (e) => {
+                  e.preventDefault();
+                  load(true);
+                },
+              },
+              "(刷新)",
+            ),
+          ),
+          React.createElement(
+            "div", { className: "ts-quota-list" },
+            configured.map((p) => React.createElement(QuotaCard, { key: p, provider: p, value: quotas[p] })),
+          ),
+        );
+      }
+
       function TokenStatsPage(props) {
         const [data, setData] = React.useState(null);
         const [tab, setTab] = React.useState(7);
@@ -614,6 +1044,7 @@ window.__ModuleLoader__.load({
             body = React.createElement(
               "div", { className: "ts-body" },
               React.createElement(SummaryCards, { sum: range.sum }),
+              React.createElement(QuotaSection, null),
               React.createElement(
                 "div", { className: "ts-block" },
                 React.createElement("div", { className: "ts-block-title" }, "每日消耗 · 按模型"),
@@ -668,6 +1099,26 @@ window.__ModuleLoader__.load({
           TokenStatsPage,
         ),
       );
+
+      // Composer quota readout (余额/套餐用量), same seat as dsh-musage:
+      // `conversation.input.right`, immediately left of the model select. Only
+      // registered while the model-selection service is mounted (it owns the
+      // per-session model directory the readout follows); scoped inject keeps
+      // deployments without it completely unaffected.
+      if (typeof ctx.inject === "function") {
+        ctx.inject(["slots", "modelDirectories"], (scope) => {
+          scope.slots.inject("conversation.input.right", () =>
+            scope.slots.register(
+              { name: "conversation.input.right", id: "token-stats-quota", order: 0, label: "Token quota" },
+              (props) =>
+                React.createElement(QuotaReadout, {
+                  sessionId: props && props.sessionId,
+                  models: scope.modelDirectories,
+                }),
+            ),
+          );
+        });
+      }
     }
 
     exports.apply = apply;

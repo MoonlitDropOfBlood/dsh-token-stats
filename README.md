@@ -27,7 +27,10 @@
 | 🗂 汇总卡片 | 区间总 Tokens / 输入(含缓存) / 输出 |
 | 💾 本地持久化 | 聚合结果落盘 `<DSH_HOME>/data/dsh-token-stats/stats.json`，冷启动只扫描新会话、秒开；删除该文件可强制全量重扫 |
 | ⏱ 自动刷新 | 页面打开期间每 30s 刷新；历史回填期间每 2s 轮询进度 |
+| 💰 套餐余额 | 输入框工具行（model 选择器左侧）内联显示当前 provider 的**余额/套餐用量**，跟随当前模型自动切换；支持 minimax / deepseek / kimi / openrouter / zhipu；60s 轮询，点击立即刷新 |
 | 🌗 主题适配 | 全部使用 DSH 设计 token，明暗主题自动跟随 |
+
+> 套餐余额功能参考自 [dsh-musage](https://github.com/Thedeergod666/dsh-musage)（MIT），API Key 直接复用 DSH 模型设置里已配置的凭据（`credentials` 服务），无需重复配置。
 
 ## 安装
 
@@ -40,7 +43,7 @@
 dsh plugin --profile web add /path/to/dsh-token-stats
 
 # 正式发布：从 GitHub Release tarball 安装
-dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-stats/releases/download/v1.2.0/dsh-token-stats-1.2.0.tgz
+dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-stats/releases/download/v1.4.0/dsh-token-stats-1.4.0.tgz
 ```
 
 重启 DSH 后，打开 DSH Web UI 的设置（侧栏底部），左侧导航会出现 **Token 统计** 页。
@@ -55,6 +58,11 @@ dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-sta
    - 饼图展示区间内每个模型的总消耗占比。
    - 顶部卡片给出区间总 Tokens / 输入 / 输出。
 3. 下方 **每日活跃** 热力图展示更长时间范围：格子越多 = 容器越宽，最多覆盖近一年。
+4. **会话输入框工具行**（model 选择器左侧）内联显示当前 provider 的套餐余额：
+   - DeepSeek / OpenRouter 显示余额（如 `¥43.97` / `$12.50`）；
+   - MiniMax / Kimi / 智谱 显示 `5h X% | 7d Y%`（5 小时 / 7 天窗口已用百分比，悬停查看重置时间）；
+   - 切换模型时自动切换 provider；每 60s 自动刷新，**点击读数立即强制刷新**；
+   - 未配置对应 API Key 或拉取失败时显示 `⚠`（悬停查看原因）；当前 provider 不在支持列表时不占位。
 
 ## 工作原理
 
@@ -67,14 +75,17 @@ DSH 会话日志（唯一权威数据源）
         │
         ▼
 TokenStatsService.getStats()   ← ctx.remote.tokenStats.getStats()（Client 调用）
+TokenStatsService.getQuota()   ← ctx.remote.tokenStats.getQuota(provider, force)
         │
-        ▼
-设置面板「Token 统计」页（柱状图 / 饼图 / 热力图，全部由同一份数据派生）
+        ├─ getStats → 设置面板「Token 统计」页（柱状图 / 饼图 / 热力图）
+        └─ getQuota → composer 工具行内联读数（conversation.input.right，
+                      紧贴 model select 左侧；跟随当前会话模型自动切 provider）
 ```
 
 - 数据按**本地日历天** × **模型**（`provider::model`）聚合；`total = input + output + cacheRead + cacheWrite`。
 - 历史回填只统计插件启动前发生的调用，实时监听只统计启动后的，两者通过每个会话的事件序号水位线合并，不会重复。
 - 模型/模型来自 `assistant/message` 的 `message.source`（kind = 'model'），无需自行解析请求头。
+- 套餐余额：Host 半经 `credentials` 服务解析用户在模型设置里已配置的 API Key（引用命名遵循 `<ROUTE>_API_KEY` 约定），GET provider 官方端点（宿主全局 fetch 优先，无 fetch 时回退 `subprocess` curl）；30s 缓存 + 失败指数退避（5s→30min），不落盘。
 
 ## 目录结构
 

@@ -9,6 +9,7 @@
 - 设置面板新增 **Token 统计** 页（`settings.section`，order 25，位于"模型/插件/智能体预设"之后）。
 - **近 7 天 / 近 30 天** 两个 Tab（均包含今天）：堆叠柱状图（每天 × 每个模型）+ 饼图（每个模型区间总消耗）。
 - **GitHub 风格热力图**：近一年每日活跃，天数随容器宽度自适应（最多 365 天）。
+- **套餐余额读数**：composer 工具行内联显示当前 provider 的余额/用量（参考 dsh-musage，MIT），跟随当前模型自动切换。
 - 数据来自 DSH **会话日志**（`assistant/message` 的 `usage`），按本地日 × 模型聚合，历史自动回填。
 
 ## 目录结构
@@ -21,6 +22,8 @@ dsh-token-stats/
 ├── typert.host.js        # Typert Host manifest：tokenStats Remote 服务的 schema/调用描述
 ├── cordis.patch.yml      # dsh bundle patch（挂载行）
 ├── .github/workflows/release.yml  # 打 v* 标签时构建并发布 GitHub Release
+├── scripts/smoke-store.mjs   # store 持久化冒烟（TOKEN_STATS_PLUGIN 指定被测 index.js）
+├── scripts/smoke-quota.mjs   # quota 路径冒烟（stub _httpGet/_quotaApiKey 驱动各 provider fixture）
 ├── AGENTS.md             # 本文件
 ├── README.md
 └── LICENSE               # MIT
@@ -120,10 +123,32 @@ window.__ModuleLoader__.load({
 3. 重启 DSH。**必须重启**，Host 加载、typert 注册、client bundle 注入都在启动时发生。
 4. 卸载：`dsh plugin --profile web remove dsh-token-stats`（自动从 bundles 列表移除）。
 
+### 7. 套餐余额（getQuota，参考 dsh-musage MIT 实现）
+
+`tokenStats.getQuota(provider, force)` 给 composer 工具行的内联读数供数；`tokenStats.getAllQuotas(force)` 并行拉全部 5 个 provider（设置页「套餐余额」区块用，返回 `{ quotas: Record<provider, QuotaValue> }`）：
+
+- **凭据**：`ctx.get("credentials").resolve(ref)`；ref 候选遵循设置页派生规则 `<ROUTE>_API_KEY`（`provider.toUpperCase().replace(/[^A-Z0-9]+/g,"_")+"_API_KEY"`，见 `dsh-client-ui-settings-models` 的 `deriveKeyRef`）+ 各 provider 的内置默认 `apiKeyEnv`（deepseek-official 路由实际用 `DEEPSEEK_API_KEY`，见 `dsh-base/cordis.patch.yml`）。无 credentials 服务时回退 `process.env[ref]`。**不要**自己存 keys。
+- **HTTP**：宿主全局 `fetch` 优先（Electron/Node 18+ 必有），`AbortSignal.timeout(15s)`；`typeof fetch !== "function"` 时回退 `ctx.get("subprocess")` spawn curl（musage 的形态）。zhipu 的 `Authorization` **不加** `Bearer ` 前缀（`authStyle: "raw"`）。
+- **缓存**：每 provider 成功 30s TTL；失败指数退避 5s→30min（`streak` 递增）；`force=true` 先清缓存再拉（客户端点击读数时传）。
+- **wire 形状**：`{ ok:true, value }` 信封内 `value` 是判别联合——成功 `{ ok:true, provider, display:{fiveHrPct,weeklyPct,fiveHrResetsIn,weeklyResetsIn,balanceText,balanceUsd,currency} }`（7 个字段恒在，缺省为 null），失败 `{ ok:false, provider, kind, message }`。typert.host.js 的 zod schema 与此**逐字段对应**，改返回值必须同步改 schema（网关 strict 校验）。
+- **不落盘**：quota 状态纯内存（`_quotaCache`/`_quotaActiveRef`），与 stats store 完全无关，STORE_VERSION 不需要动。
+- **解析器**是模块级纯函数（minimax 双 schema / deepseek balance_infos / kimi limits+usage / openrouter credits / zhipu unit=3|6），改动后跑 `npm run smoke:quota`（脚本 stub `_httpGet`/`_quotaApiKey` 驱动各 provider fixture）。
+
+**Client 侧显示位置**（与 dsh-musage 相同）：`conversation.input.right` 槽位——composer 卡内 `.trailing` 工具行，**紧贴 model select 左侧**；容器 `inline-flex + margin-left:auto + gap:4 + fontSize:11 + tabular-nums`。要点：
+
+- 该槽位 `kind:"list", scope:"session"`，**standardProps 自带 `sessionId`**（ownerProps 为空 `{}`；`renderSlot("conversation.input.right", {})` 不传业务 props）。
+- 当前 provider 从 `modelDirectories.directoryFor(sessionId).store` 订阅（`getSnapshot().current.provider` 是 DSH **route id**，经 `PROVIDER_ALIASES` 映射成内部 key，如 `deepseek-official→deepseek`、`zai-coding-cn→zhipu`）。route 不在映射表 → 返回 `null` 完全不占位。
+- 注册用 **`ctx.inject(["slots", "modelDirectories"], scope => scope.slots.inject(...))`** 包裹：该服务由 `dsh-client-ui-model-selection` 提供，缺它的部署里读数不注册、其余功能不受影响。**不要**写进 `exports.inject` 硬依赖（会拖住整个 client 插件）；scope 里用到的每个服务（含 `slots`）都要写进这个 inject 列表（对照 `dsh-client-ui-model-selection` 的写法）。
+- 60s `setInterval` 轮询 + 点击 `loadRef.current(true)` 强制刷新；provider 切换即重取。
+- **悬停面板是自绘的**（`.ts-quota` 容器 `position:relative` + `.ts-quota-pop` 绝对定位卡片，DSW 设计 token + 进度条），**不要退回原生 `title`**（用户嫌丑）。
+- 设置页余额区块 `QuotaSection` 走 `getAllQuotas`；**只渲染非 `unconfigured` 的 provider**（全部未配置 → 整块返回 null 不渲染）；失败卡片照常显示错误。
+- 本地没有 node_modules 时，把 DSH 部署的 `@deepseek-ai`/`zod` junction 进 `node_modules/` 即可跑两个 smoke 脚本（已 gitignore）。
+
 ## 开发 / 验证
 
 ```bash
 npm run check            # node --check index.js client.js typert.host.js
+npm run smoke:quota      # quota 解析/缓存/信封冒烟（无需 DSH）
 dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机 DSH profile
 ```
 
@@ -132,6 +157,7 @@ dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机
 2. 打开页面：汇总卡片、柱状图、饼图、热力图渲染正常。
 3. 切 7/30 天 Tab，数据随区间变化；等历史回填完成后 `ready: true`。
 4. 有新对话产生后，刷新按钮/30s 自动刷新能看到当天数据增长。
+5. 会话输入框工具行（model 选择器左侧）出现当前 provider 的余额读数；切换模型跟随变化；点击读数强制刷新。
 
 ## 发布
 
