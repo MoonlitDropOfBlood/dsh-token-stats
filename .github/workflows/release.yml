@@ -25,9 +25,10 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install dependencies
-        run: npm ci || npm install
-
+      # 不安装依赖：node --check 与 npm pack 都不需要 node_modules；而 npm
+      # 默认会自动安装 root peer（@deepseek-ai/dsh 整棵闭包），与
+      # dsh-typert-protocol 的 caret 区间发生 ERESOLVE 冲突秒失败（v1.5.0
+      # 首次发布踩过）。
       - name: Syntax check
         run: |
           node --check index.js
@@ -64,7 +65,7 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      - run: npm install
+      # 同样不安装依赖：npm publish 只打 files 声明的文件，无 prepack/prepare。
       - run: npm publish
 
   release:
