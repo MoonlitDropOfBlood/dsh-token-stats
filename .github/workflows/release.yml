@@ -82,6 +82,11 @@ jobs:
       - name: List artifacts
         run: ls -la artifacts/
 
+      # npm pack 产物名用 package.json 版本号（不带 v 前缀），与标签 ref_name 不同。
+      - name: Resolve asset name
+        id: asset
+        run: echo "tgz=duke-dsh-plugins-dsh-token-stats-${GITHUB_REF_NAME#v}.tgz" >> "$GITHUB_OUTPUT"
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -97,14 +102,14 @@ jobs:
             ### 功能
             - 近 7 天 / 近 30 天（均含今天）：每日按模型消耗的堆叠柱状图 + 模型总消耗饼图。
             - GitHub 风格「近一年」每日活跃热力图（随容器宽度自适应天数，最多 365 天）。
-            - 💰 套餐余额：会话输入框工具行（模型选择器左侧）内联显示当前 provider 的余额/用量（DeepSeek/OpenRouter 余额，MiniMax/Kimi/智谱 5h+7d 窗口），跟随当前模型自动切换，点击立即刷新（参考 [dsh-musage](https://github.com/Thedeergod666/dsh-musage)，MIT）。
+            - 💰 套餐余额：会话输入框工具行（模型选择器左侧）内联显示当前 provider 的余额/用量（DeepSeek/OpenRouter 余额，MiniMax/Kimi/智谱 5h+7d 窗口，小米 MiMo Token Plan 套餐+本月），跟随当前模型自动切换，点击立即刷新（参考 [dsh-musage](https://github.com/Thedeergod666/dsh-musage)，MIT）。
             - 设置页新增「套餐余额」区块：所有已配置 API Key 的 provider 一行一张余额卡片。
             - 数据来源为 DSH 会话日志（`assistant/message` 的 usage），按天/按模型聚合，历史自动回填。
 
             ### 📦 安装（标准 DSH bundle）
             ```bash
-            # 注意 scoped 包 npm pack 产物名带 scope 前缀
-            dsh plugin --profile web add ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/duke-dsh-plugins-dsh-token-stats-${{ github.ref_name }}.tgz
+            # 注意 scoped 包 npm pack 产物名带 scope 前缀、版本号不带 v
+            dsh plugin --profile web add ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.asset.outputs.tgz }}
             # 重启 DSH 后，设置面板出现「Token 统计」页
             ```
           files: artifacts/*
