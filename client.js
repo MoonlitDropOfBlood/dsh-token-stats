@@ -209,21 +209,55 @@ window.__ModuleLoader__.load({
     };
 
     async function apply(ctx) {
-      // Mount the tokenStats namespace before anything touches it; the mount's
-      // lifetime is bound to this plugin's context by $mount itself.
-      await ctx.remote.$mount(CLIENT_REMOTE);
+      // 0.1.7-rc.1 hardening: a client bundle that rejects can keep the whole
+      // web app from reaching the conversation page. Every optional step below
+      // degrades independently so this plugin never blocks DSH boot; the last
+      // resort catch keeps apply() itself from rejecting.
+      try {
+        await applyInner(ctx);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        (typeof console !== "undefined" && console.error ? console.error : () => {})(
+          "[dsh-token-stats] client apply failed; plugin disabled for this session:",
+          e,
+        );
+      }
+    }
 
-      const styleTag = document.createElement("style");
-      styleTag.textContent = CSS;
-      document.head.appendChild(styleTag);
-      ctx.effect(() => () => styleTag.remove());
+    async function applyInner(ctx) {
+      // Mount the tokenStats namespace before anything touches it; the mount's
+      // lifetime is bound to this plugin's context by $mount itself. A mount
+      // failure (descriptor schema drift in a future dsh) downgrades the UI to
+      // an error state instead of failing the whole bundle.
+      let remote = null;
+      try {
+        await ctx.remote.$mount(CLIENT_REMOTE);
+        remote = ctx.get("remote.tokenStats") || null;
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        (typeof console !== "undefined" && console.warn ? console.warn : () => {})(
+          "[dsh-token-stats] remote.$mount failed; stats page will show an error state:",
+          e,
+        );
+      }
+
+      let styleTag = null;
+      try {
+        styleTag = document.createElement("style");
+        styleTag.textContent = CSS;
+        document.head.appendChild(styleTag);
+        ctx.effect(() => () => styleTag && styleTag.remove());
+      } catch (e) {
+        /* cosmetic only */
+      }
 
       // Mark our settings-nav row so the CSS above replaces the shell's
       // fallback gear (no icon field exists in settings.section yet).
-      ctx.effect(() => registerSettingsNavIcon(SETTINGS_LABEL));
-
-      // ctx.get() reads the service without the property-accessor inject guard.
-      const remote = ctx.get("remote.tokenStats");
+      try {
+        ctx.effect(() => registerSettingsNavIcon(SETTINGS_LABEL));
+      } catch (e) {
+        /* cosmetic only */
+      }
 
       const PALETTE = [
         "#5b8cff", "#f26d7a", "#3ecf8e", "#f5b942", "#a78bfa", "#38bdf8",
@@ -603,8 +637,12 @@ window.__ModuleLoader__.load({
         "openrouter": "openrouter",
         "zai-coding-cn": "zhipu",
         "zhipu": "zhipu",
+        // Xiaomi MiMo：route id 由用户添加 provider 时命名，覆盖常见拼法。
+        "xiaomi-mimo": "mimo",
+        "xiaomimimo": "mimo",
+        "mimo": "mimo",
       };
-      const QUOTA_PROVIDER_ORDER = ["minimax", "deepseek", "kimi", "openrouter", "zhipu"];
+      const QUOTA_PROVIDER_ORDER = ["minimax", "deepseek", "kimi", "openrouter", "zhipu", "mimo"];
 
       function quotaProviderLabel(p) {
         if (p === "minimax") return "MiniMax";
@@ -612,6 +650,7 @@ window.__ModuleLoader__.load({
         if (p === "kimi") return "Kimi";
         if (p === "openrouter") return "OpenRouter";
         if (p === "zhipu") return "Zhipu";
+        if (p === "mimo") return "MiMo";
         return p;
       }
 
@@ -632,7 +671,20 @@ window.__ModuleLoader__.load({
           const txt = d.balanceText || (typeof d.balanceUsd === "number" ? "$" + d.balanceUsd.toFixed(2) : "—");
           return [labelEl, React.createElement("span", { key: "b", style: strong }, txt)];
         }
-        // minimax / kimi / zhipu: 5h + 7d 窗口已用百分比
+        if (provider === "mimo") {
+          // MiMo Token Plan：套餐已用% + 本月总额度%（detail 缺失时可能只有一行）
+          const parts = [labelEl];
+          if (typeof d.fiveHrPct === "number") {
+            parts.push(React.createElement("span", { key: "plan", style: strong }, "套餐 " + d.fiveHrPct + "%"));
+          }
+          if (typeof d.weeklyPct === "number") {
+            if (parts.length > 1) parts.push(React.createElement("span", { key: "sep", style: { opacity: 0.5, fontSize: 10 } }, "|"));
+            parts.push(React.createElement("span", { key: "month", style: strong }, "本月 " + d.weeklyPct + "%"));
+          }
+          if (parts.length === 1) parts.push(React.createElement("span", { key: "na", style: strong }, "—"));
+          return parts;
+        }
+        // minimax / kimi / zhipu: 5h + 7d 双窗口套餐
         const five = typeof d.fiveHrPct === "number" ? d.fiveHrPct + "%" : "—";
         const week = typeof d.weeklyPct === "number" ? d.weeklyPct + "%" : "—";
         return [
@@ -658,10 +710,16 @@ window.__ModuleLoader__.load({
               ),
             );
           }
-          const windows = [
-            ["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn],
-            ["7d 窗口", d.weeklyPct, d.weeklyResetsIn],
-          ];
+          const windows =
+            props.provider === "mimo"
+              ? [
+                  ["套餐已用", d.fiveHrPct, d.fiveHrResetsIn],
+                  ["本月总额度", d.weeklyPct, d.weeklyResetsIn],
+                ]
+              : [
+                  ["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn],
+                  ["7d 窗口", d.weeklyPct, d.weeklyResetsIn],
+                ];
           for (const w of windows) {
             if (typeof w[1] !== "number") continue;
             rows.push(
@@ -866,10 +924,16 @@ window.__ModuleLoader__.load({
             React.createElement("div", { className: "ts-quota-card-value" }, d.balanceText),
           );
         }
-        const windows = [
-          ["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn],
-          ["7d 窗口", d.weeklyPct, d.weeklyResetsIn],
-        ];
+        const windows =
+          p === "mimo"
+            ? [
+                ["套餐已用", d.fiveHrPct, d.fiveHrResetsIn],
+                ["本月总额度", d.weeklyPct, d.weeklyResetsIn],
+              ]
+            : [
+                ["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn],
+                ["7d 窗口", d.weeklyPct, d.weeklyResetsIn],
+              ];
         return React.createElement(
           "div", { className: "ts-card ts-quota-card" },
           React.createElement(
@@ -952,6 +1016,10 @@ window.__ModuleLoader__.load({
 
         const load = React.useCallback(async () => {
           try {
+            if (!remote) {
+              setError("tokenStats Remote 未就绪（宿主插件可能加载失败）");
+              return;
+            }
             const res = await remote.getStats();
             if (res && res.ok) {
               // The Remote gateway returns `res.value` = the Host method's full
@@ -1093,12 +1161,20 @@ window.__ModuleLoader__.load({
       }
 
       // Settings entry: a full page under the sidebar Settings panel.
-      ctx.slots.inject("settings.section", () =>
-        ctx.slots.register(
-          { name: "settings.section", id: "token-stats", order: 25, label: () => SETTINGS_LABEL },
-          TokenStatsPage,
-        ),
-      );
+      try {
+        ctx.slots.inject("settings.section", () =>
+          ctx.slots.register(
+            { name: "settings.section", id: "token-stats", order: 25, label: () => SETTINGS_LABEL },
+            TokenStatsPage,
+          ),
+        );
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        (typeof console !== "undefined" && console.warn ? console.warn : () => {})(
+          "[dsh-token-stats] settings.section registration failed:",
+          e,
+        );
+      }
 
       // Composer quota readout (余额/套餐用量), same seat as dsh-musage:
       // `conversation.input.right`, immediately left of the model select. Only
@@ -1106,18 +1182,34 @@ window.__ModuleLoader__.load({
       // per-session model directory the readout follows); scoped inject keeps
       // deployments without it completely unaffected.
       if (typeof ctx.inject === "function") {
-        ctx.inject(["slots", "modelDirectories"], (scope) => {
-          scope.slots.inject("conversation.input.right", () =>
-            scope.slots.register(
-              { name: "conversation.input.right", id: "token-stats-quota", order: 0, label: "Token quota" },
-              (props) =>
-                React.createElement(QuotaReadout, {
-                  sessionId: props && props.sessionId,
-                  models: scope.modelDirectories,
-                }),
-            ),
+        try {
+          ctx.inject(["slots", "modelDirectories"], (scope) => {
+            try {
+              scope.slots.inject("conversation.input.right", () =>
+                scope.slots.register(
+                  { name: "conversation.input.right", id: "token-stats-quota", order: 0, label: "Token quota" },
+                  (props) =>
+                    React.createElement(QuotaReadout, {
+                      sessionId: props && props.sessionId,
+                      models: scope.modelDirectories,
+                    }),
+                ),
+              );
+            } catch (e) {
+              // eslint-disable-next-line no-console
+              (typeof console !== "undefined" && console.warn ? console.warn : () => {})(
+                "[dsh-token-stats] conversation.input.right registration failed:",
+                e,
+              );
+            }
+          });
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          (typeof console !== "undefined" && console.warn ? console.warn : () => {})(
+            "[dsh-token-stats] modelDirectories scoped inject failed:",
+            e,
           );
-        });
+        }
       }
     }
 

@@ -27,9 +27,9 @@
  * (`<provider>::<model>`), which is exactly what the Client charts consume.
  *
  * A second Remote method, `getQuota(provider, force)`, reports one provider's
- * coding-plan quota / balance (minimax / deepseek / kimi / openrouter / zhipu)
- * for the composer readout — adapted from dsh-musage (MIT). It resolves the
- * user-configured API key through the `credentials` service, GETs the
+ * coding-plan quota / balance (minimax / deepseek / kimi / openrouter / zhipu /
+ * mimo) for the composer readout — adapted from dsh-musage (MIT). It resolves
+ * the user-configured API key through the `credentials` service, GETs the
  * provider's endpoint (global fetch, curl via `subprocess` as fallback), and
  * caches per provider (30 s TTL, exponential backoff on failure). In-memory
  * only; nothing below touches the persisted stats store.
@@ -142,7 +142,26 @@ const QUOTA_PROVIDERS = {
     // 智谱特殊: Authorization 不加 "Bearer " 前缀 (来自 Musage zhipu.rs 注释)
     authStyle: "raw",
   },
+  // Xiaomi MiMo Token Plan — dashboard admin API（非公开 endpoint）：
+  // Bearer 实测 401（session 守护），可靠路径是登录 Cookie；单个凭证值先
+  // Bearer 后 Cookie 自动重试（对齐 Musage xiaomi.rs 的 BearerThenCookie）。
+  // 在 DSH 凭据里把浏览器 DevTools 复制的完整 Cookie 或 API Key 配到
+  // XIAOMI_MIMO_API_KEY / XIAOMI_MIMO_COOKIE（或 MIMO_*）任一 ref。
+  mimo: {
+    refs: ["XIAOMI_MIMO_API_KEY", "XIAOMI_MIMO_COOKIE", "MIMO_API_KEY", "MIMO_COOKIE"],
+    urls: {
+      XIAOMI_MIMO_API_KEY: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+      XIAOMI_MIMO_COOKIE: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+      MIMO_API_KEY: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+      MIMO_COOKIE: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+    },
+    parse: parseMimoResponse,
+  },
 };
+
+/** Xiaomi MiMo dashboard admin API endpoints（usage + detail，鉴权同一凭证）。 */
+const MIMO_USAGE_URL = "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage";
+const MIMO_DETAIL_URL = "https://platform.xiaomimimo.com/api/v1/tokenPlan/detail";
 
 function quotaBackoffMs(streak) {
   if (streak <= 0) return 0;
@@ -402,6 +421,127 @@ function formatBalance(n, currency) {
   return symbol + (n >= 100 ? n.toFixed(0) : n.toFixed(2));
 }
 
+// ----- xiaomi mimo (小米 MiMo Token Plan) parser -----
+//   { "code": 0,
+//     "data": {
+//       "usage":      { "items": [ {"name":"plan_total_token","percent":0.13}, ... ] },
+//       "monthUsage": { "items": [ {"name":"month_total_token","percent":0.42} ] } } }
+// percent 是 0-1 小数（×100 得百分比）；detail 端给 currentPeriodEnd（UTC 字符串）
+// 与 expired。套餐/总额度相差 <0.5pt 视为同一份额度（去重，对齐 Musage）。
+// 业务 code 40100..40199 等价于 HTTP 401（凭据失效）。
+
+function mimoItemPct(item) {
+  if (!item || typeof item !== "object") return null;
+  if (typeof item.percent === "number" && isFinite(item.percent)) {
+    return Math.max(0, Math.min(100, Math.round(item.percent * 100)));
+  }
+  const used = Number(item.used);
+  const limit = Number(item.limit);
+  if (isFinite(used) && isFinite(limit) && limit > 0) {
+    return Math.max(0, Math.min(100, Math.round((used / limit) * 100)));
+  }
+  return null;
+}
+
+function parseMimoResponse(body, detailBody) {
+  let json;
+  try {
+    json = typeof body === "string" ? JSON.parse(body) : body;
+  } catch {
+    return { ok: false, provider: "mimo", kind: "parse", message: "JSON 解析失败" };
+  }
+  if (!json || typeof json !== "object") {
+    return { ok: false, provider: "mimo", kind: "parse", message: "MiMo 响应不是对象" };
+  }
+  if (typeof json.code === "number" && json.code !== 0) {
+    if (json.code >= 40100 && json.code < 40200) {
+      return {
+        ok: false,
+        provider: "mimo",
+        kind: "auth_failed",
+        message: "MiMo 凭据已失效（Cookie 过期或未登录），请到 platform.xiaomimimo.com 重新复制",
+      };
+    }
+    return {
+      ok: false,
+      provider: "mimo",
+      kind: "server_error",
+      message: "MiMo 业务错误 code=" + json.code + " · " + (json.message || ""),
+    };
+  }
+  const data = json.data;
+  if (!data || typeof data !== "object") {
+    return { ok: false, provider: "mimo", kind: "parse", message: "MiMo 响应缺少 data 字段" };
+  }
+
+  let resetsAt = null;
+  let expired = false;
+  if (detailBody) {
+    let detail;
+    try {
+      detail = typeof detailBody === "string" ? JSON.parse(detailBody) : detailBody;
+    } catch {
+      detail = null;
+    }
+    const dd = detail && detail.data;
+    if (dd && typeof dd === "object") {
+      if (dd.expired === true) expired = true;
+      if (typeof dd.currentPeriodEnd === "string" && dd.currentPeriodEnd) {
+        const t = Date.parse(dd.currentPeriodEnd.replace(" ", "T") + "Z");
+        if (!isNaN(t)) resetsAt = t;
+      }
+    }
+  }
+  if (expired) {
+    return {
+      ok: false,
+      provider: "mimo",
+      kind: "plan_expired",
+      message: "MiMo Token 套餐已过期，请到 platform.xiaomimimo.com 续费",
+    };
+  }
+
+  const usageItems = data.usage && Array.isArray(data.usage.items) ? data.usage.items : [];
+  const monthItems = data.monthUsage && Array.isArray(data.monthUsage.items) ? data.monthUsage.items : [];
+  const findPct = (items, name) => {
+    const hit = items.find((it) => it && it.name === name);
+    return hit ? mimoItemPct(hit) : null;
+  };
+  let planPct = findPct(usageItems, "plan_total_token");
+  let monthPct = findPct(monthItems, "month_total_token");
+
+  if (planPct === null && monthPct === null) {
+    if (usageItems.length > 0 || monthItems.length > 0) {
+      const names = usageItems.concat(monthItems).map((it) => it && it.name).filter(Boolean).join(",");
+      return {
+        ok: false,
+        provider: "mimo",
+        kind: "schema_unknown",
+        message: "MiMo 响应字段都不认识（items: " + names + "）",
+      };
+    }
+    return { ok: false, provider: "mimo", kind: "parse", message: "MiMo usage.items 为空（套餐可能已过期）" };
+  }
+  // 套餐与月度总额度是同一份额度时只显示一行（Musage 0.5pt 去重阈值）
+  if (planPct !== null && monthPct !== null && Math.abs(monthPct - planPct) < 0.5) {
+    monthPct = null;
+  }
+  const resetsIn = resetsAt ? formatResetsIn(resetsAt) : null;
+  return {
+    ok: true,
+    provider: "mimo",
+    display: {
+      fiveHrPct: planPct,
+      weeklyPct: monthPct,
+      fiveHrResetsIn: planPct !== null ? resetsIn : null,
+      weeklyResetsIn: monthPct !== null ? resetsIn : null,
+      balanceText: null,
+      balanceUsd: null,
+      currency: null,
+    },
+  };
+}
+
 function formatResetsIn(resetsAtMs) {
   if (typeof resetsAtMs !== "number" || !resetsAtMs) return "";
   const ms = resetsAtMs - Date.now();
@@ -474,13 +614,18 @@ export class TokenStatsService extends TypertRemoteService {
 
   /**
    * Cordis class-plugin initializer: runs right after construction, before the
-   * service is published. Mark the Remote method, then start collecting.
+   * service is published. Mark the Remote methods, then start collecting.
+   *
+   * 0.1.7-rc.1 hardening: with dsh 0.1.7, a required plugin whose activation
+   * rejects can take the whole profile down (the startup page names the failing
+   * plugin and DSH never reaches the chat). So every step after the state
+   * fields are initialized is best-effort: a failure leaves the service
+   * registered and answering (getStats reports the error) instead of failing
+   * activation.
    */
   [Service.init]() {
-    markRemoteMethod(this, "getStats", "getStats");
-    markRemoteMethod(this, "getQuota", "getQuota");
-    markRemoteMethod(this, "getAllQuotas", "getAllQuotas");
-
+    // State first: whatever later step fails, the Remote methods below must
+    // always find consistent in-memory state to answer with.
     /** dayKey ('YYYY-MM-DD', local) -> Map<modelKey, day aggregate>. */
     this._byDay = new Map();
     /** modelKey -> { key, name, provider }. */
@@ -500,22 +645,55 @@ export class TokenStatsService extends TypertRemoteService {
     this._quotaActiveRef = Object.create(null);
     this._curlPath = null;
 
+    try {
+      markRemoteMethod(this, "getStats", "getStats");
+    } catch (e) {
+      this._backfill.error = "getStats 未发布: " + String((e && e.message) || e);
+    }
+    try {
+      markRemoteMethod(this, "getQuota", "getQuota");
+    } catch (e) {
+      this._backfill.error = "getQuota 未发布: " + String((e && e.message) || e);
+    }
+    try {
+      markRemoteMethod(this, "getAllQuotas", "getAllQuotas");
+    } catch (e) {
+      this._backfill.error = "getAllQuotas 未发布: " + String((e && e.message) || e);
+    }
+
     // Restore the previous run's aggregates so a cold start only scans new sessions.
-    this._loadStore();
+    try {
+      this._loadStore();
+    } catch (e) {
+      /* missing or corrupt store: start empty and let backfill do a full scan */
+    }
 
     // Best-effort synchronous flush when the plugin fiber is disposed.
-    this.ctx.effect(() => () => {
-      if (this._saveTimer) {
-        clearTimeout(this._saveTimer);
-        this._saveTimer = null;
-      }
-      if (this._dirty) this._saveSync();
-    });
+    try {
+      this.ctx.effect(() => () => {
+        if (this._saveTimer) {
+          clearTimeout(this._saveTimer);
+          this._saveTimer = null;
+        }
+        if (this._dirty) this._saveSync();
+      });
+    } catch (e) {
+      this._backfill.error = "持久化刷新未注册: " + String((e && e.message) || e);
+    }
 
     // Live capture: every committed session append.
-    this.ctx.on("session/event", (session, event) => this._onSessionEvent(session, event));
+    try {
+      this.ctx.on("session/event", (session, event) => this._onSessionEvent(session, event));
+    } catch (e) {
+      this._backfill.error = "实时采集未注册: " + String((e && e.message) || e);
+    }
 
-    this._startBackfill();
+    try {
+      const backfill = this._startBackfill();
+      if (backfill && typeof backfill.catch === "function") backfill.catch(() => {});
+    } catch (e) {
+      this._backfill.error = "历史回填启动失败: " + String((e && e.message) || e);
+    }
   }
 
   // ---- data helpers ---------------------------------------------------------
@@ -893,7 +1071,12 @@ export class TokenStatsService extends TypertRemoteService {
       return { ok: false, kind: "network", message: "subprocess service 不可用, 且宿主无全局 fetch" };
     }
     const c = await this._resolveCurl();
-    const authHeader = authStyle === "raw" ? "Authorization: " + key : "Authorization: Bearer " + key;
+    const authHeader =
+      authStyle === "raw"
+        ? "Authorization: " + key
+        : authStyle === "cookie"
+          ? "Cookie: " + key
+          : "Authorization: Bearer " + key;
     const handle = subprocess.spawn({
       argv: [
         c, "-sS",
@@ -940,12 +1123,14 @@ export class TokenStatsService extends TypertRemoteService {
   async _httpGet(url, key, authStyle) {
     if (typeof fetch === "function") {
       try {
+        const headers = { accept: "application/json" };
+        // authStyle: undefined → Bearer； "raw" → 原样 Authorization（智谱）；
+        // "cookie" → 整串 Cookie 头（小米 MiMo dashboard admin API）。
+        if (authStyle === "cookie") headers.cookie = key;
+        else headers.authorization = authStyle === "raw" ? key : "Bearer " + key;
         const res = await fetch(url, {
           method: "GET",
-          headers: {
-            authorization: authStyle === "raw" ? key : "Bearer " + key,
-            accept: "application/json",
-          },
+          headers,
           signal: AbortSignal.timeout(QUOTA_REQUEST_TIMEOUT_MS),
         });
         const body = await res.text();
@@ -979,10 +1164,29 @@ export class TokenStatsService extends TypertRemoteService {
         message: "未配置 " + provider + " API Key (在 DSH 模型设置里配置对应 provider)",
       };
     }
+    if (provider === "mimo") return this._fetchMimoQuota(key);
     const url = cfg.urls[ref] || cfg.urls[cfg.refs[0]];
     const raw = await this._httpGet(url, key, cfg.authStyle);
     if (!raw.ok) return { ...raw, provider };
     return cfg.parse(raw.body);
+  }
+
+  /**
+   * Xiaomi MiMo Token Plan（dashboard admin API，契约来自 Musage xiaomi.rs）：
+   * 同一凭证值先按 Bearer 试，401/403 时原样改 `Cookie:` 头重试；usage 成功
+   * 后再 best-effort 拉一次 detail（周期结束时间 / 过期标记）。detail 失败
+   * 不影响 usage 结果（只是没有重置倒计时）。
+   */
+  async _fetchMimoQuota(key) {
+    let raw = await this._httpGet(MIMO_USAGE_URL, key, undefined);
+    let cookie = false;
+    if (!raw.ok && (raw.httpStatus === 401 || raw.httpStatus === 403)) {
+      raw = await this._httpGet(MIMO_USAGE_URL, key, "cookie");
+      cookie = true;
+    }
+    if (!raw.ok) return { ...raw, provider: "mimo" };
+    const detail = await this._httpGet(MIMO_DETAIL_URL, key, cookie ? "cookie" : undefined);
+    return parseMimoResponse(raw.body, detail && detail.ok ? detail.body : null);
   }
 
   /**
@@ -1006,8 +1210,8 @@ export class TokenStatsService extends TypertRemoteService {
 
   /**
    * Plan quota / balance for one provider (`minimax` | `deepseek` | `kimi` |
-   * `openrouter` | `zhipu`). The composer readout in the Client half calls
-   * this for the session's active provider (and on click with force=true).
+   * `openrouter` | `zhipu` | `mimo`). The composer readout in the Client half
+   * calls this for the session's active provider (and on click with force=true).
    */
   async getQuota(provider, force) {
     const p = typeof provider === "string" ? provider : "";

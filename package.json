@@ -1,6 +1,6 @@
 {
   "name": "@duke-dsh-plugins/dsh-token-stats",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Token usage statistics for DeepSeek Harness (7/30-day per-model charts + yearly heatmap) plus an inline coding-plan balance/quota readout in the composer (minimax/deepseek/kimi/openrouter/zhipu).",
   "repository": {
     "type": "git",
@@ -26,6 +26,9 @@
     "cordis.patch.yml"
   ],
   "license": "MIT",
+  "engines": {
+    "dsh": ">=0.1.4-rc.2 <0.2.0"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -36,6 +39,7 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh": ">=0.1.4-rc.2 <0.2.0",
     "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.7"
   },
   "dependencies": {
@@ -44,6 +48,7 @@
   "scripts": {
     "check": "node --check index.js && node --check client.js && node --check typert.host.js",
     "smoke": "node scripts/smoke-store.mjs",
-    "smoke:quota": "node scripts/smoke-quota.mjs"
+    "smoke:quota": "node scripts/smoke-quota.mjs",
+    "smoke:robust": "node scripts/smoke-robust-host.mjs && node scripts/smoke-robust-client.mjs"
   }
 }

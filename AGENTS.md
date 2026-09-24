@@ -24,6 +24,8 @@ dsh-token-stats/
 ├── .github/workflows/release.yml  # 打 v* 标签时构建并发布 GitHub Release
 ├── scripts/smoke-store.mjs   # store 持久化冒烟（TOKEN_STATS_PLUGIN 指定被测 index.js）
 ├── scripts/smoke-quota.mjs   # quota 路径冒烟（stub _httpGet/_quotaApiKey 驱动各 provider fixture）
+├── scripts/smoke-robust-host.mjs    # 0.1.7 容错回归：host init 在恶劣 seam 下不抛
+├── scripts/smoke-robust-client.mjs  # 0.1.7 容错回归：client apply 在恶劣 seam 下不 reject
 ├── AGENTS.md             # 本文件
 ├── README.md
 └── LICENSE               # MIT
@@ -125,10 +127,11 @@ window.__ModuleLoader__.load({
 
 ### 7. 套餐余额（getQuota，参考 dsh-musage MIT 实现）
 
-`tokenStats.getQuota(provider, force)` 给 composer 工具行的内联读数供数；`tokenStats.getAllQuotas(force)` 并行拉全部 5 个 provider（设置页「套餐余额」区块用，返回 `{ quotas: Record<provider, QuotaValue> }`）：
+`tokenStats.getQuota(provider, force)` 给 composer 工具行的内联读数供数；`tokenStats.getAllQuotas(force)` 并行拉全部 6 个 provider（设置页「套餐余额」区块用，返回 `{ quotas: Record<provider, QuotaValue> }`）：
 
 - **凭据**：`ctx.get("credentials").resolve(ref)`；ref 候选遵循设置页派生规则 `<ROUTE>_API_KEY`（`provider.toUpperCase().replace(/[^A-Z0-9]+/g,"_")+"_API_KEY"`，见 `dsh-client-ui-settings-models` 的 `deriveKeyRef`）+ 各 provider 的内置默认 `apiKeyEnv`（deepseek-official 路由实际用 `DEEPSEEK_API_KEY`，见 `dsh-base/cordis.patch.yml`）。无 credentials 服务时回退 `process.env[ref]`。**不要**自己存 keys。
 - **HTTP**：宿主全局 `fetch` 优先（Electron/Node 18+ 必有），`AbortSignal.timeout(15s)`；`typeof fetch !== "function"` 时回退 `ctx.get("subprocess")` spawn curl（musage 的形态）。zhipu 的 `Authorization` **不加** `Bearer ` 前缀（`authStyle: "raw"`）。
+- **mimo（小米 MiMo Token Plan，v1.5.0 起）**：dashboard admin API（非公开）：`platform.xiaomimimo.com/api/v1/tokenPlan/usage` + `/detail`。纯 Bearer 实测 401（session 守护），可靠凭证是浏览器登录 Cookie → 同一凭证值**先 Bearer 后 `Cookie:` 头自动重试**（对齐 Musage xiaomi.rs 的 BearerThenCookie；`authStyle: "cookie"`）。凭据 ref 候选 `XIAOMI_MIMO_API_KEY / XIAOMI_MIMO_COOKIE / MIMO_API_KEY / MIMO_COOKIE`（route id 用户命名，client 侧 `PROVIDER_ALIASES` 收 `xiaomi-mimo / xiaomimimo / mimo`）。解析：`code:0` 成功（**业务 40100–40199 → auth_failed**）；`usage.items[]` 的 `plan_total_token`/`compensation_total_token` + `monthUsage.items[]` 的 `month_total_token`，**percent 是 0–1 小数（×100）**，缺 percent 回退 `used/limit`；套餐与月度总额度相差 <0.5pt 去重；detail 给 `currentPeriodEnd`（UTC 字符串）→ 重置倒计时、`expired:true` → `plan_expired` 错误引导续费。client 显示 `套餐 X% | 本月 Y%`（复用 fiveHrPct/weeklyPct 字段，标签按 provider 切换，不写死 5h/7d）。
 - **缓存**：每 provider 成功 30s TTL；失败指数退避 5s→30min（`streak` 递增）；`force=true` 先清缓存再拉（客户端点击读数时传）。
 - **wire 形状**：`{ ok:true, value }` 信封内 `value` 是判别联合——成功 `{ ok:true, provider, display:{fiveHrPct,weeklyPct,fiveHrResetsIn,weeklyResetsIn,balanceText,balanceUsd,currency} }`（7 个字段恒在，缺省为 null），失败 `{ ok:false, provider, kind, message }`。typert.host.js 的 zod schema 与此**逐字段对应**，改返回值必须同步改 schema（网关 strict 校验）。
 - **不落盘**：quota 状态纯内存（`_quotaCache`/`_quotaActiveRef`），与 stats store 完全无关，STORE_VERSION 不需要动。
@@ -149,8 +152,21 @@ window.__ModuleLoader__.load({
 ```bash
 npm run check            # node --check index.js client.js typert.host.js
 npm run smoke:quota      # quota 解析/缓存/信封冒烟（无需 DSH）
+npm run smoke:robust     # 0.1.7 容错回归：host init / client apply 在恶劣 seam 下不抛（无需 DSH）
 dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机 DSH profile
 ```
+
+### 0.1.7-rc.1 兼容（v1.5.0 起）
+
+0.1.7-rc.1 的行为变化与本插件的应对（排查结论，改代码前必读）：
+
+- **必需插件失败即退出**：0.1.7 起宿主插件激活 reject 会让整个 profile 起不来（启动诊断页点名失败插件，进不了对话页）。→ Host 半 `[Service.init]()` 必须先初始化全部内存状态，再**逐步 try/catch**：`markRemoteMethod`×3、store 恢复、`ctx.effect` 刷新钩子、`session/event` 监听、回填启动，任何一步失败只把原因写进 `_backfill.error`，服务照常注册应答。
+- **client bundle apply() reject 会卡住 web 启动**：→ `apply()` 整体 try/catch 永不 reject；`remote.$mount`、样式注入、settings.section、conversation.input.right、scoped inject 各自独立降级（remote 挂载失败 → 设置页显示错误态，其余功能不受影响）。
+- **版本兼容预检**：0.1.7 安装/启动时用 `semver.satisfies(runtime, peer范围, {includePrerelease:true})` 检查所有 `@deepseek-ai/dsh*` peer。`^0.1.0-rc.7` 在 includePrerelease 下**能**命中 `0.1.7-rc.1`（已核对 `plugin-compatibility.ts` 源码），不会误伤；显式声明 `@deepseek-ai/dsh` peer（与 `engines.dsh` 同串）作为运行时契约文档。
+- **共享 peer fallback writer 退役**：0.1.7 主进程改用内存路由表 + ESM/CJS 拦截（`profile-resolution/resolver.ts`），link 插件按"祖先目录 manifest 的 peerDependencies 声明"路由到安装副本——所以**插件的 peer 声明必须真实**，改名/删 peer 会破坏解析。
+- `markRemoteMethod` 手动驱动 `Remote()` 的方式在 0.1.7 协议（`REMOTE_METHOD_DESCRIPTOR` v1 + `addInitializer`）下**仍然兼容**，已核对；仍保留 try/catch 防未来漂移。
+- **dsh-market 兼容显示（v1.5.0 起）**：市场从已发布 npm manifest 读取 `engines.dsh`（顶层，优先）或 `dsh.engines.dsh`，加上所有 `@deepseek-ai/dsh*` peer（`discovery-compatibility.js`：engine 严格 semver、peer 方向性策略，全部声明取交集），在插件卡片显示"宿主要求 {range}"并驱动"适配本机 DSH"筛选与安装阻断。本插件声明 `engines.dsh: ">=0.1.4-rc.2 <0.2.0"`（与 `@deepseek-ai/dsh` peer 同串，展示去重）+ `dsh-typert-protocol ^0.1.0-rc.7`；改支持版本时**三处同步改**。注意：市场按 `${registry}/${name}/latest` 拉 manifest，**必须发新版 npm 才生效**（成功结果缓存 24h）。
+- 参考：[0.1.7-rc.1 release notes](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.7-rc.1)、[#7635 讨论](https://github.com/deepseek-ai/deepseek-harness/discussions/7635)（子进程 peer 解析回归，与本插件无关但同源）。
 
 改插件后**必须重启 DSH 进程**才生效（动态 HMR 不适用于正式安装的插件）。验证：
 1. 设置 → 侧栏导航出现 **Token 统计**。

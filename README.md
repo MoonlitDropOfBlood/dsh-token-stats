@@ -27,7 +27,7 @@
 | 🗂 汇总卡片 | 区间总 Tokens / 输入(含缓存) / 输出 |
 | 💾 本地持久化 | 聚合结果落盘 `<DSH_HOME>/data/dsh-token-stats/stats.json`，冷启动只扫描新会话、秒开；删除该文件可强制全量重扫 |
 | ⏱ 自动刷新 | 页面打开期间每 30s 刷新；历史回填期间每 2s 轮询进度 |
-| 💰 套餐余额 | 输入框工具行（model 选择器左侧）内联显示当前 provider 的**余额/套餐用量**，跟随当前模型自动切换；支持 minimax / deepseek / kimi / openrouter / zhipu；60s 轮询，点击立即刷新 |
+| 💰 套餐余额 | 输入框工具行（model 选择器左侧）内联显示当前 provider 的**余额/套餐用量**，跟随当前模型自动切换；支持 minimax / deepseek / kimi / openrouter / zhipu / mimo（小米）；60s 轮询，点击立即刷新 |
 | 🌗 主题适配 | 全部使用 DSH 设计 token，明暗主题自动跟随 |
 
 > 套餐余额功能参考自 [dsh-musage](https://github.com/Thedeergod666/dsh-musage)（MIT），API Key 直接复用 DSH 模型设置里已配置的凭据（`credentials` 服务），无需重复配置。
@@ -61,8 +61,11 @@ dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-sta
 4. **会话输入框工具行**（model 选择器左侧）内联显示当前 provider 的套餐余额：
    - DeepSeek / OpenRouter 显示余额（如 `¥43.97` / `$12.50`）；
    - MiniMax / Kimi / 智谱 显示 `5h X% | 7d Y%`（5 小时 / 7 天窗口已用百分比，悬停查看重置时间）；
+   - 小米 MiMo 显示 `套餐 X% | 本月 Y%`（Token Plan 已用百分比，悬停查看重置时间；需在凭据里配 platform.xiaomimimo.com 的登录 Cookie，见下）；
    - 切换模型时自动切换 provider；每 60s 自动刷新，**点击读数立即强制刷新**；
    - 未配置对应 API Key 或拉取失败时显示 `⚠`（悬停查看原因）；当前 provider 不在支持列表时不占位。
+
+> **MiMo（小米）配置**：MiMo 的用量走 dashboard admin API（非公开 endpoint），纯 API Key（Bearer）实测会被 401 拒绝，可靠凭证是浏览器登录 Cookie。打开 platform.xiaomimimo.com → 订阅管理，F12 → Network 任一 `/api/v1/tokenPlan/*` 请求 → 复制完整 `Cookie` 请求头值，粘到 DSH 凭据的 `XIAOMI_MIMO_COOKIE`（或把 API Key 配到 `XIAOMI_MIMO_API_KEY`，插件会先 Bearer 后 Cookie 自动重试）。
 
 ## 工作原理
 

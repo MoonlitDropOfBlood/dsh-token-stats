@@ -75,6 +75,57 @@ svc._quotaCache.zhipu = null;
 r = await svc.getQuota("zhipu", false);
 check("zhipu fixture parsed", r.value.ok === true && r.value.display.fiveHrPct === 80, JSON.stringify(r.value));
 
+// mimo fixture: Bearer 401 → Cookie fallback succeeds; detail gives reset time
+const mimoEnd = new Date(Date.now() + 72 * 3600e3).toISOString().slice(0, 19).replace("T", " ");
+const mimoCalls = [];
+svc._quotaApiKey = async () => ({ ref: "XIAOMI_MIMO_COOKIE", key: "api-platform_serviceToken=abc; userId=1" });
+svc._httpGet = async (url, key, style) => {
+  mimoCalls.push({ url: url.slice(24), style: style || "bearer" });
+  if (style !== "cookie") return { ok: false, kind: "auth_failed", httpStatus: 401, message: "HTTP 401" };
+  if (url.indexOf("detail") >= 0) {
+    return { ok: true, body: JSON.stringify({ code: 0, data: { planName: "Standard", currentPeriodEnd: mimoEnd, expired: false } }) };
+  }
+  return { ok: true, body: JSON.stringify({ code: 0, data: { usage: { items: [{ name: "plan_total_token", percent: 0.13 }, { name: "compensation_total_token", percent: 1 }] }, monthUsage: { items: [{ name: "month_total_token", percent: 0.42 }] } } }) };
+};
+svc._quotaCache.mimo = null;
+r = await svc.getQuota("mimo", false);
+check(
+  "mimo bearer→cookie fallback parsed",
+  r.value.ok === true && r.value.display.fiveHrPct === 13 && r.value.display.weeklyPct === 42 && typeof r.value.display.fiveHrResetsIn === "string",
+  JSON.stringify(r.value),
+);
+check(
+  "mimo retried with cookie then fetched detail",
+  mimoCalls.length === 3 && mimoCalls[0].style === "bearer" && mimoCalls[1].style === "cookie" && mimoCalls[2].url.indexOf("detail") >= 0,
+  JSON.stringify(mimoCalls),
+);
+
+// mimo dedup: month within 0.5pt of plan → month dropped
+svc._httpGet = async (url, key, style) => {
+  if (style !== "cookie") return { ok: false, kind: "auth_failed", httpStatus: 401, message: "HTTP 401" };
+  if (url.indexOf("detail") >= 0) return { ok: true, body: JSON.stringify({ code: 0, data: { expired: false } }) };
+  return { ok: true, body: JSON.stringify({ code: 0, data: { usage: { items: [{ name: "plan_total_token", percent: 0.5 }] }, monthUsage: { items: [{ name: "month_total_token", percent: 0.504 }] } } }) };
+};
+svc._quotaCache.mimo = null;
+r = await svc.getQuota("mimo", false);
+check("mimo dedups month≈plan (<0.5pt)", r.value.ok === true && r.value.display.fiveHrPct === 50 && r.value.display.weeklyPct === null, JSON.stringify(r.value));
+
+// mimo business 40101 → auth_failed
+svc._httpGet = async (url, key, style) => ({ ok: true, body: JSON.stringify({ code: 40101, message: "未登录" }) });
+svc._quotaCache.mimo = null;
+r = await svc.getQuota("mimo", false);
+check("mimo business 401xx → auth_failed", r.value.ok === false && r.value.kind === "auth_failed", JSON.stringify(r.value));
+
+// mimo expired plan → plan_expired with renewal hint
+svc._httpGet = async (url, key, style) => {
+  if (style !== "cookie") return { ok: false, kind: "auth_failed", httpStatus: 401, message: "HTTP 401" };
+  if (url.indexOf("detail") >= 0) return { ok: true, body: JSON.stringify({ code: 0, data: { planName: "Standard", currentPeriodEnd: "2026-06-27 23:59:59", expired: true } }) };
+  return { ok: true, body: JSON.stringify({ code: 0, data: { usage: { items: [] }, monthUsage: { items: [] } } }) };
+};
+svc._quotaCache.mimo = null;
+r = await svc.getQuota("mimo", false);
+check("mimo expired → plan_expired", r.value.ok === false && r.value.kind === "plan_expired" && r.value.message.indexOf("platform.xiaomimimo.com") >= 0, JSON.stringify(r.value));
+
 // HTTP error classification
 svc._httpGet = async () => ({ ok: false, kind: "auth_failed", httpStatus: 401, message: "HTTP 401" });
 svc._quotaCache.openrouter = null;
@@ -93,8 +144,8 @@ svc2[initKey]();
 const all = await svc2.getAllQuotas(false);
 check("getAllQuotas envelope", all && all.ok === true && all.value && typeof all.value.quotas === "object");
 check(
-  "getAllQuotas covers 5 providers, all unconfigured",
-  ["minimax", "deepseek", "kimi", "openrouter", "zhipu"].every(
+  "getAllQuotas covers 6 providers, all unconfigured",
+  ["minimax", "deepseek", "kimi", "openrouter", "zhipu", "mimo"].every(
     (p) => all.value.quotas[p] && all.value.quotas[p].ok === false && all.value.quotas[p].kind === "unconfigured",
   ),
   JSON.stringify(Object.keys(all.value.quotas)),
