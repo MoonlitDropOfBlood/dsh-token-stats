@@ -646,8 +646,18 @@ window.__ModuleLoader__.load({
         // Xiaomi MiMo：route id 由用户添加 provider 时命名，覆盖常见拼法。
         "xiaomi-mimo": "mimo",
         "xiaomimimo": "mimo",
+        "xiaomi-token-plan-cn": "mimo",
         "mimo": "mimo",
       };
+      /** route id → 内部 key：精确查表未命中时对 mimo 做包含回退（route id 用户自由命名，如 xiaomi-token-plan-cn）。 */
+      function providerKeyForRoute(route) {
+        if (!route) return null;
+        const exact = PROVIDER_ALIASES[route];
+        if (exact !== undefined) return exact;
+        const lower = String(route).toLowerCase();
+        if (lower.includes("mimo") || lower.includes("xiaomi")) return "mimo";
+        return null;
+      }
       const QUOTA_PROVIDER_ORDER = ["minimax", "deepseek", "kimi", "openrouter", "zhipu", "mimo"];
 
       function quotaProviderLabel(p) {
@@ -785,7 +795,7 @@ window.__ModuleLoader__.load({
             try {
               const snap = directory.store.getSnapshot();
               const route = snap && snap.current && snap.current.provider;
-              setProvider(route ? PROVIDER_ALIASES[route] || null : null);
+              setProvider(providerKeyForRoute(route));
             } catch (e) {
               setProvider(null);
             }

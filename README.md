@@ -65,7 +65,7 @@ dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-sta
    - 切换模型时自动切换 provider；每 60s 自动刷新，**点击读数立即强制刷新**；
    - 未配置对应 API Key 或拉取失败时显示 `⚠`（悬停查看原因）；当前 provider 不在支持列表时不占位。
 
-> **MiMo（小米）配置**：MiMo 的用量走 dashboard admin API（非公开 endpoint），纯 API Key（Bearer）实测会被 401 拒绝，可靠凭证是浏览器登录 Cookie。打开 platform.xiaomimimo.com → 订阅管理，F12 → Network 任一 `/api/v1/tokenPlan/*` 请求 → 复制完整 `Cookie` 请求头值，粘到 DSH 凭据的 `XIAOMI_MIMO_COOKIE`（或把 API Key 配到 `XIAOMI_MIMO_API_KEY`，插件会先 Bearer 后 Cookie 自动重试）。
+> **MiMo（小米）配置**：MiMo 的用量走 dashboard admin API（非公开 endpoint），纯 API Key（Bearer）实测会被 401 拒绝，可靠凭证是浏览器登录 Cookie。打开 platform.xiaomimimo.com → 订阅管理，F12 → Network 任一 `/api/v1/tokenPlan/*` 请求 → 复制完整 `Cookie` 请求头值，粘到 DSH 凭据的 `XIAOMI_MIMO_COOKIE`（或把 API Key 配到 `XIAOMI_MIMO_API_KEY`，插件会先 Bearer 后 Cookie 自动重试）。按 route 派生命名的凭据（设置页自动生成，如 `XIAOMI_TOKEN_PLAN_CN_API_KEY`）同样识别；composer 读数按 route id 匹配（`xiaomi-mimo` / `xiaomimimo` / `xiaomi-token-plan-cn` / 名字含 xiaomi 或 mimo 均可）。
 
 ## 工作原理
 

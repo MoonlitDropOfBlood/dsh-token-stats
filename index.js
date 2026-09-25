@@ -146,10 +146,14 @@ const QUOTA_PROVIDERS = {
   // Bearer 实测 401（session 守护），可靠路径是登录 Cookie；单个凭证值先
   // Bearer 后 Cookie 自动重试（对齐 Musage xiaomi.rs 的 BearerThenCookie）。
   // 在 DSH 凭据里把浏览器 DevTools 复制的完整 Cookie 或 API Key 配到
-  // XIAOMI_MIMO_API_KEY / XIAOMI_MIMO_COOKIE（或 MIMO_*）任一 ref。
+  // XIAOMI_MIMO_API_KEY / XIAOMI_MIMO_COOKIE（或 MIMO_*）任一 ref；route 派生
+  // 名（设置页按 route 生成的 XIAOMI_TOKEN_PLAN_CN_API_KEY/_COOKIE，与
+  // 其他 provider 的 MINIMAX_CN_* 同规则）同样识别。
   mimo: {
-    refs: ["XIAOMI_MIMO_API_KEY", "XIAOMI_MIMO_COOKIE", "MIMO_API_KEY", "MIMO_COOKIE"],
+    refs: ["XIAOMI_TOKEN_PLAN_CN_API_KEY", "XIAOMI_TOKEN_PLAN_CN_COOKIE", "XIAOMI_MIMO_API_KEY", "XIAOMI_MIMO_COOKIE", "MIMO_API_KEY", "MIMO_COOKIE"],
     urls: {
+      XIAOMI_TOKEN_PLAN_CN_API_KEY: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+      XIAOMI_TOKEN_PLAN_CN_COOKIE: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
       XIAOMI_MIMO_API_KEY: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
       XIAOMI_MIMO_COOKIE: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
       MIMO_API_KEY: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
