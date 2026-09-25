@@ -26,6 +26,7 @@ dsh-token-stats/
 ├── scripts/smoke-quota.mjs   # quota 路径冒烟（stub _httpGet/_quotaApiKey 驱动各 provider fixture）
 ├── scripts/smoke-robust-host.mjs    # 0.1.7 容错回归：host init 在恶劣 seam 下不抛
 ├── scripts/smoke-robust-client.mjs  # 0.1.7 容错回归：client apply 在恶劣 seam 下不 reject
+├── scripts/smoke-typert.mjs         # 用部署侧 dsh-typert-loader 真校验器跑 TYPERT manifest
 ├── AGENTS.md             # 本文件
 ├── README.md
 └── LICENSE               # MIT
@@ -145,7 +146,7 @@ window.__ModuleLoader__.load({
 - 60s `setInterval` 轮询 + 点击 `loadRef.current(true)` 强制刷新；provider 切换即重取。
 - **悬停面板是自绘的**（`.ts-quota` 容器 `position:relative` + `.ts-quota-pop` 绝对定位卡片，DSW 设计 token + 进度条），**不要退回原生 `title`**（用户嫌丑）。
 - 设置页余额区块 `QuotaSection` 走 `getAllQuotas`；**只渲染非 `unconfigured` 的 provider**（全部未配置 → 整块返回 null 不渲染）；失败卡片照常显示错误。
-- 本地没有 node_modules 时，把 DSH 部署的 `@deepseek-ai`/`zod` junction 进 `node_modules/` 即可跑两个 smoke 脚本（已 gitignore）。
+- 本地没有 node_modules 时，把 DSH 部署的 `@deepseek-ai`/`zod` junction 进 `node_modules/` 即可跑 smoke 脚本（已 gitignore；`smoke:typert` 也吃这套 junction，或用 `DSH_NODE_MODULES` 指向部署 node_modules）。
 
 ## 开发 / 验证
 
@@ -153,6 +154,7 @@ window.__ModuleLoader__.load({
 npm run check            # node --check index.js client.js typert.host.js
 npm run smoke:quota      # quota 解析/缓存/信封冒烟（无需 DSH）
 npm run smoke:robust     # 0.1.7 容错回归：host init / client apply 在恶劣 seam 下不抛（无需 DSH）
+npm run smoke:typert     # 用部署侧 dsh-typert-loader 的 validateTypertManifest 真校验 TYPERT（需 junction，见下）
 dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机 DSH profile
 ```
 
@@ -166,6 +168,7 @@ dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机
 - **共享 peer fallback writer 退役**：0.1.7 主进程改用内存路由表 + ESM/CJS 拦截（`profile-resolution/resolver.ts`），link 插件按"祖先目录 manifest 的 peerDependencies 声明"路由到安装副本——所以**插件的 peer 声明必须真实**，改名/删 peer 会破坏解析。
 - `markRemoteMethod` 手动驱动 `Remote()` 的方式在 0.1.7 协议（`REMOTE_METHOD_DESCRIPTOR` v1 + `addInitializer`）下**仍然兼容**，已核对；仍保留 try/catch 防未来漂移。
 - **dsh-market 兼容显示（v1.5.0 起）**：市场从已发布 npm manifest 读取 `engines.dsh`（顶层，优先）或 `dsh.engines.dsh`，加上所有 `@deepseek-ai/dsh*` peer（`discovery-compatibility.js`：engine 严格 semver、peer 方向性策略，全部声明取交集），在插件卡片显示"宿主要求 {range}"并驱动"适配本机 DSH"筛选与安装阻断。本插件声明 `engines.dsh: ">=0.1.4-rc.2 <0.2.0"`（与 `@deepseek-ai/dsh` peer 同串，展示去重）+ `dsh-typert-protocol ^0.1.0-rc.7`；改支持版本时**三处同步改**。注意：市场按 `${registry}/${name}/latest` 拉 manifest，**必须发新版 npm 才生效**（成功结果缓存 24h）。
+- **typert manifest 的 strict codec 必须带 `create()` 工厂**：typert-loader 的 `requireStrictCodec` 对每个 `mode:"strict"` 的 codec 强制 `typeSymbol` 非空 + `typeof create === "function"`，缺一个**整个 manifest 拒载**——v1.5.0 因此从未注册成功，`tokenStats/*` 全部不可用（"装上插件 Token 统计页报错"事故根因，v1.5.1 修复）。新增/修改 codec 后**必须**跑 `npm run smoke:typert`（import 部署侧真校验器；`npm run check` 只查语法，抓不住这类 schema 形态错误）。正确形态参照 `dsh-archive-manager/typert.host.js`（`schema: factory()` + `create: factory` 双字段）或官方生成物（仅 `create`，schema 由工厂产出）。
 - 参考：[0.1.7-rc.1 release notes](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.7-rc.1)、[#7635 讨论](https://github.com/deepseek-ai/deepseek-harness/discussions/7635)（子进程 peer 解析回归，与本插件无关但同源）。
 
 改插件后**必须重启 DSH 进程**才生效（动态 HMR 不适用于正式安装的插件）。验证：

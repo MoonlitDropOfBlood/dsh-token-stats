@@ -1,6 +1,6 @@
 {
   "name": "@duke-dsh-plugins/dsh-token-stats",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Token usage statistics for DeepSeek Harness (7/30-day per-model charts + yearly heatmap) plus an inline coding-plan balance/quota readout in the composer (minimax/deepseek/kimi/openrouter/zhipu).",
   "repository": {
     "type": "git",
@@ -49,6 +49,7 @@
     "check": "node --check index.js && node --check client.js && node --check typert.host.js",
     "smoke": "node scripts/smoke-store.mjs",
     "smoke:quota": "node scripts/smoke-quota.mjs",
-    "smoke:robust": "node scripts/smoke-robust-host.mjs && node scripts/smoke-robust-client.mjs"
+    "smoke:robust": "node scripts/smoke-robust-host.mjs && node scripts/smoke-robust-client.mjs",
+    "smoke:typert": "node scripts/smoke-typert.mjs"
   }
 }

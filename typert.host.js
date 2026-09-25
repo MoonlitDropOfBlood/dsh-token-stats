@@ -12,6 +12,13 @@
 
 import { z } from "zod";
 
+// typert-loader's requireStrictCodec rejects strict codecs without a create()
+// factory (v1.5.0 shipped without these, so the loader never registered this
+// manifest and every tokenStats Remote call failed). Every codec below is
+// paired with its factory; run `npm run smoke:typert` after changes.
+const createStringSchema = () => z.string();
+const createBooleanSchema = () => z.boolean();
+
 // ---- shared shapes ---------------------------------------------------------
 
 const modelDaySchema = z
@@ -80,6 +87,8 @@ const tokenStatsResultSchema = z.union([
     .readonly(),
 ]);
 
+const createTokenStatsResult = () => tokenStatsResultSchema;
+
 // ---- quota / balance (套餐余额) ---------------------------------------------
 
 const quotaDisplaySchema = z
@@ -132,6 +141,8 @@ const tokenStatsQuotaResultSchema = z.union([
     .readonly(),
 ]);
 
+const createTokenStatsQuotaResult = () => tokenStatsQuotaResultSchema;
+
 const allQuotasValueSchema = z
   .object({
     quotas: z.record(z.string(), quotaValueSchema).readonly(),
@@ -158,6 +169,8 @@ const tokenStatsAllQuotasResultSchema = z.union([
     .readonly(),
 ]);
 
+const createTokenStatsAllQuotasResult = () => tokenStatsAllQuotasResultSchema;
+
 export const TYPERT = {
   package: "@duke-dsh-plugins/dsh-token-stats",
   face: "host",
@@ -174,6 +187,7 @@ export const TYPERT = {
         mode: "strict",
         typeSymbol: "dsh-token-stats#TokenStatsResult",
         schema: tokenStatsResultSchema,
+        create: createTokenStatsResult,
       },
       sourceLocation: { file: "index.js", line: 1, column: 1 },
     },
@@ -192,6 +206,7 @@ export const TYPERT = {
             mode: "strict",
             typeSymbol: "dsh-token-stats#tokenStats/getQuota:provider",
             schema: z.string(),
+            create: createStringSchema,
           },
         },
         {
@@ -202,6 +217,7 @@ export const TYPERT = {
             mode: "strict",
             typeSymbol: "dsh-token-stats#tokenStats/getQuota:force",
             schema: z.boolean(),
+            create: createBooleanSchema,
           },
         },
       ],
@@ -209,6 +225,7 @@ export const TYPERT = {
         mode: "strict",
         typeSymbol: "dsh-token-stats#TokenStatsQuotaResult",
         schema: tokenStatsQuotaResultSchema,
+        create: createTokenStatsQuotaResult,
       },
       sourceLocation: { file: "index.js", line: 1, column: 1 },
     },
@@ -227,6 +244,7 @@ export const TYPERT = {
             mode: "strict",
             typeSymbol: "dsh-token-stats#tokenStats/getAllQuotas:force",
             schema: z.boolean(),
+            create: createBooleanSchema,
           },
         },
       ],
@@ -234,6 +252,7 @@ export const TYPERT = {
         mode: "strict",
         typeSymbol: "dsh-token-stats#TokenStatsAllQuotasResult",
         schema: tokenStatsAllQuotasResultSchema,
+        create: createTokenStatsAllQuotasResult,
       },
       sourceLocation: { file: "index.js", line: 1, column: 1 },
     },
