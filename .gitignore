@@ -19,3 +19,4 @@ Thumbs.db
 
 # Reference checkouts (third-party, read-only)
 .ref/
+.tmp-index*.html
