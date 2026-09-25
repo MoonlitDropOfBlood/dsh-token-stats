@@ -102,7 +102,7 @@ window.__ModuleLoader__.load({
 
 要点：
 - `exports.inject` 声明依赖：`["slots", "remote"]`。用 `ctx.slots` 必须声明 `"slots"`；`remote.tokenStats` 命名空间是**自挂载**的（见下），用 `ctx.get("remote.tokenStats")` 读取，不要把它写进 inject。
-- **Remote 命名空间必须自挂载**：`await ctx.remote.$mount(CLIENT_REMOTE)`（`dsh-api-remotes` 只挂载官方命名空间）。描述符与 `typert.host.js` 的 invocation 一一对应；浏览器没有 zod，用 passthrough schema（`{ parse: (v) => v }`）。
+- **Remote 命名空间必须自挂载**：`await ctx.remote.$mount(CLIENT_REMOTE)`（`dsh-api-remotes` 只挂载官方命名空间）。描述符与 `typert.host.js` 的 invocation 一一对应；浏览器没有 zod，用 passthrough schema（`{ parse: (v) => v }`）——**且每个 strict codec 必须带 `create:` 工厂**（0.1.7 的客户端 typert remote store 与 typert-loader 同契约，缺 create 会让 `$mount` 抛 "has no create() factory" → 命名空间挂不上 → "Remote 未就绪"，v1.5.1 就栽在这里；离线复现见 `scripts/repro-client-mount.mjs`）。
 - **CSS 注入**用 `document.createElement("style")` + `ctx.effect(() => () => styleTag.remove())` 清理（动态插件的 `styles.insert` 在这里不存在）。
 - **轮询/延迟**用浏览器原生 `setInterval`/`setTimeout`，在 `React.useEffect` 里返回清理函数。
 - **宽度自适应**用 `ResizeObserver` 监听页面容器，热力图天数由宽度计算（`weeks = min(floor((w - pads)/(cell+gap)), 53)`，`days = min(365, weeks*7)`）。
@@ -155,6 +155,7 @@ npm run check            # node --check index.js client.js typert.host.js
 npm run smoke:quota      # quota 解析/缓存/信封冒烟（无需 DSH）
 npm run smoke:robust     # 0.1.7 容错回归：host init / client apply 在恶劣 seam 下不抛（无需 DSH）
 npm run smoke:typert     # 用部署侧 dsh-typert-loader 的 validateTypertManifest 真校验 TYPERT（需 junction，见下）
+node scripts/repro-client-mount.mjs   # 用部署侧真 client 网关跑 $mount，验证 client 描述符能挂上（需 junction）
 dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机 DSH profile
 ```
 
@@ -168,7 +169,7 @@ dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机
 - **共享 peer fallback writer 退役**：0.1.7 主进程改用内存路由表 + ESM/CJS 拦截（`profile-resolution/resolver.ts`），link 插件按"祖先目录 manifest 的 peerDependencies 声明"路由到安装副本——所以**插件的 peer 声明必须真实**，改名/删 peer 会破坏解析。
 - `markRemoteMethod` 手动驱动 `Remote()` 的方式在 0.1.7 协议（`REMOTE_METHOD_DESCRIPTOR` v1 + `addInitializer`）下**仍然兼容**，已核对；仍保留 try/catch 防未来漂移。
 - **dsh-market 兼容显示（v1.5.0 起）**：市场从已发布 npm manifest 读取 `engines.dsh`（顶层，优先）或 `dsh.engines.dsh`，加上所有 `@deepseek-ai/dsh*` peer（`discovery-compatibility.js`：engine 严格 semver、peer 方向性策略，全部声明取交集），在插件卡片显示"宿主要求 {range}"并驱动"适配本机 DSH"筛选与安装阻断。本插件声明 `engines.dsh: ">=0.1.4-rc.2 <0.2.0"`（与 `@deepseek-ai/dsh` peer 同串，展示去重）+ `dsh-typert-protocol ^0.1.0-rc.7`；改支持版本时**三处同步改**。注意：市场按 `${registry}/${name}/latest` 拉 manifest，**必须发新版 npm 才生效**（成功结果缓存 24h）。
-- **typert manifest 的 strict codec 必须带 `create()` 工厂**：typert-loader 的 `requireStrictCodec` 对每个 `mode:"strict"` 的 codec 强制 `typeSymbol` 非空 + `typeof create === "function"`，缺一个**整个 manifest 拒载**——v1.5.0 因此从未注册成功，`tokenStats/*` 全部不可用（"装上插件 Token 统计页报错"事故根因，v1.5.1 修复）。新增/修改 codec 后**必须**跑 `npm run smoke:typert`（import 部署侧真校验器；`npm run check` 只查语法，抓不住这类 schema 形态错误）。正确形态参照 `dsh-archive-manager/typert.host.js`（`schema: factory()` + `create: factory` 双字段）或官方生成物（仅 `create`，schema 由工厂产出）。
+- **typert manifest 的 strict codec 必须带 `create()` 工厂（host + client 两侧都强制）**：typert-loader 的 `requireStrictCodec` 对每个 `mode:"strict"` 的 codec 强制 `typeSymbol` 非空 + `typeof create === "function"`，缺一个**整个 manifest 拒载**——v1.5.0 因此从未注册成功（事故一，v1.5.1 修复 host 侧）；**client.js 的 `$mount` 描述符同样被 0.1.7 客户端 remote store 拒载**（`typert: ... strict codec has no create() factory`）→ 命名空间挂不上 → 统计页/余额全灭（事故二，v1.5.2 补齐 client 侧）。新增/修改 codec 后**必须**跑 `npm run smoke:typert` + `node scripts/repro-client-mount.mjs`（都 import 部署侧真代码；`npm run check` 只查语法，抓不住这类 schema 形态错误）。正确形态参照 `dsh-archive-manager/typert.host.js`（`schema: factory()` + `create: factory` 双字段）或官方生成物（仅 `create`，schema 由工厂产出）。
 - 参考：[0.1.7-rc.1 release notes](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.7-rc.1)、[#7635 讨论](https://github.com/deepseek-ai/deepseek-harness/discussions/7635)（子进程 peer 解析回归，与本插件无关但同源）。
 
 改插件后**必须重启 DSH 进程**才生效（动态 HMR 不适用于正式安装的插件）。验证：

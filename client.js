@@ -140,9 +140,12 @@ window.__ModuleLoader__.load({
     // client assembly mounts only the five official namespaces, so a plugin
     // must mount its own. Mirrors the invocation in typert.host.js (id,
     // service/namespace/method). zod is not requirable in the browser module
-    // loader, so codecs use passthrough schemas — the runtime contract only
-    // requires typeSymbol + schema.parse().
+    // loader, so codecs use passthrough schemas. 0.1.7's client-side typert
+    // remote store REJECTS strict codecs without a create() factory (same
+    // contract as typert-loader — v1.5.1 shipped without these and every
+    // $mount failed with "has no create() factory", dead Remote namespace).
     const passthrough = () => ({ parse: (v) => v });
+    const createPassthrough = () => passthrough();
     const CLIENT_REMOTE = {
       package: "dsh-token-stats",
       descriptors: [
@@ -157,6 +160,7 @@ window.__ModuleLoader__.load({
             mode: "strict",
             typeSymbol: "dsh-token-stats#TokenStatsResult",
             schema: passthrough(),
+            create: createPassthrough,
           },
         },
         {
@@ -170,19 +174,20 @@ window.__ModuleLoader__.load({
               name: "provider",
               wire: "provider",
               source: "json",
-              codec: { mode: "strict", typeSymbol: "dsh-token-stats#tokenStats/getQuota:provider", schema: passthrough() },
+              codec: { mode: "strict", typeSymbol: "dsh-token-stats#tokenStats/getQuota:provider", schema: passthrough(), create: createPassthrough },
             },
             {
               name: "force",
               wire: "force",
               source: "json",
-              codec: { mode: "strict", typeSymbol: "dsh-token-stats#tokenStats/getQuota:force", schema: passthrough() },
+              codec: { mode: "strict", typeSymbol: "dsh-token-stats#tokenStats/getQuota:force", schema: passthrough(), create: createPassthrough },
             },
           ],
           result: {
             mode: "strict",
             typeSymbol: "dsh-token-stats#TokenStatsQuotaResult",
             schema: passthrough(),
+            create: createPassthrough,
           },
         },
         {
@@ -196,13 +201,14 @@ window.__ModuleLoader__.load({
               name: "force",
               wire: "force",
               source: "json",
-              codec: { mode: "strict", typeSymbol: "dsh-token-stats#tokenStats/getAllQuotas:force", schema: passthrough() },
+              codec: { mode: "strict", typeSymbol: "dsh-token-stats#tokenStats/getAllQuotas:force", schema: passthrough(), create: createPassthrough },
             },
           ],
           result: {
             mode: "strict",
             typeSymbol: "dsh-token-stats#TokenStatsAllQuotasResult",
             schema: passthrough(),
+            create: createPassthrough,
           },
         },
       ],
