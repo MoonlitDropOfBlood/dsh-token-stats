@@ -33,6 +33,15 @@ window.__ModuleLoader__.load({
 .ts-head-title{font-size:16px;font-weight:500;line-height:24px;margin:0;flex:1}
 .ts-refresh{box-sizing:border-box;height:28px;font:inherit;cursor:pointer;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:transparent;color:var(--dsw-alias-label-secondary);padding:0 12px;font-size:12px;line-height:26px}
 .ts-refresh:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}
+.ts-cred-block{display:flex;flex-direction:column;gap:8px}
+.ts-cred-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ts-cred-label{min-width:64px;font-size:12px;color:var(--dsw-alias-label-secondary)}
+.ts-cred-input{box-sizing:border-box;height:28px;flex:1;min-width:220px;font:inherit;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);padding:0 10px;font-size:12px}
+.ts-cred-input:focus{outline:none;border-color:var(--dsw-alias-border-l1)}
+.ts-cred-save{box-sizing:border-box;height:28px;font:inherit;cursor:pointer;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);padding:0 12px;font-size:12px}
+.ts-cred-save:hover{border-color:var(--dsw-alias-border-l1)}
+.ts-cred-save:disabled{opacity:.5;cursor:default}
+.ts-cred-msg{font-size:12px;color:var(--dsw-alias-label-secondary)}
 .ts-status{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;min-height:18px}
 .ts-tabs{display:inline-flex;gap:4px;padding:3px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;align-self:flex-start}
 .ts-tab{box-sizing:border-box;height:26px;font:inherit;cursor:pointer;border:none;background:transparent;color:var(--dsw-alias-label-secondary);border-radius:7px;padding:0 14px;font-size:13px;line-height:26px}
@@ -658,6 +667,17 @@ window.__ModuleLoader__.load({
         if (lower.includes("mimo") || lower.includes("xiaomi")) return "mimo";
         return null;
       }
+      // 凭据设置行写入的 ref — 与 host QUOTA_PROVIDERS.refs 首选项对齐。
+      // mimo 写 XIAOMI_MIMO_COOKIE（README 文档路径），不触碰 LLM 路由的
+      // API Key ref（host probe 顺序 Cookie 优先，v1.5.4）。
+      const QUOTA_CRED_REFS = {
+        minimax: "MINIMAX_CN_API_KEY",
+        deepseek: "DEEPSEEK_API_KEY",
+        kimi: "KIMI_CODING_API_KEY",
+        openrouter: "OPENROUTER_API_KEY",
+        zhipu: "ZAI_CODING_CN_API_KEY",
+        mimo: "XIAOMI_MIMO_COOKIE",
+      };
       const QUOTA_PROVIDER_ORDER = ["minimax", "deepseek", "kimi", "openrouter", "zhipu", "mimo"];
 
       function quotaProviderLabel(p) {
@@ -910,7 +930,8 @@ window.__ModuleLoader__.load({
       }
 
       // ---- Settings 页余额区块 ----------------------------------------------
-      // 展示所有已配置 API Key 的 provider 余额卡片; 全部未配置时整块不渲染.
+      // 卡片 = 已配置的 provider；未配置或凭据失效（auth_failed）的 provider
+      // 在「凭据设置」行里粘贴凭据（remote.credentials.set → force 重拉）。
 
       function QuotaCard(props) {
         const p = props.provider;
@@ -978,6 +999,9 @@ window.__ModuleLoader__.load({
 
       function QuotaSection() {
         const [quotas, setQuotas] = React.useState(null);
+        const [credDrafts, setCredDrafts] = React.useState({});
+        const [credMsgs, setCredMsgs] = React.useState({});
+        const [credSaving, setCredSaving] = React.useState({});
         const load = React.useCallback(async (force) => {
           try {
             const payload = unwrapRemote(await remote.getAllQuotas(force === true));
@@ -992,16 +1016,46 @@ window.__ModuleLoader__.load({
           return () => clearInterval(t);
         }, [load]);
 
+        const saveCred = React.useCallback(async (p, value) => {
+          const ref = QUOTA_CRED_REFS[p];
+          const trimmed = typeof value === "string" ? value.trim() : "";
+          if (!ref || !trimmed) return;
+          setCredSaving((s) => ({ ...s, [p]: true }));
+          try {
+            // 官方 credentials 命名空间（settings-models 同款用法）；不写进
+            // inject 硬依赖，保存时才惰性取，取不到就提示错误。
+            const ns = (ctx.remote && ctx.remote.credentials) || ctx.get("remote.credentials");
+            if (!ns || typeof ns.set !== "function") throw new Error("credentials Remote 不可用");
+            const r = await ns.set(ref, trimmed);
+            if (r && r.ok) {
+              setCredDrafts((d) => ({ ...d, [p]: "" }));
+              setCredMsgs((m) => ({ ...m, [p]: "已保存，正在拉取…" }));
+              await load(true);
+              setCredMsgs((m) => ({ ...m, [p]: "已保存 ✓" }));
+            } else {
+              const msg = r && r.error && r.error.message ? r.error.message : "保存失败";
+              setCredMsgs((m) => ({ ...m, [p]: msg }));
+            }
+          } catch (e) {
+            setCredMsgs((m) => ({ ...m, [p]: e instanceof Error ? e.message : String(e) }));
+          } finally {
+            setCredSaving((s) => ({ ...s, [p]: false }));
+          }
+        }, [load]);
+
         if (!quotas) return null;
         const names = QUOTA_PROVIDER_ORDER.filter((p) => quotas[p]);
-        // 只展示已配置 API Key 的 provider; 全部未配置 → 整块不渲染.
+        // 卡片 = 非 unconfigured；设置行 = unconfigured 或 auth_failed。
         const configured = names.filter((p) => !(quotas[p] && quotas[p].ok === false && quotas[p].kind === "unconfigured"));
-        if (configured.length === 0) return null;
+        const needsCred = names.filter(
+          (p) => quotas[p] && quotas[p].ok === false && (quotas[p].kind === "unconfigured" || quotas[p].kind === "auth_failed"),
+        );
+        if (configured.length === 0 && needsCred.length === 0) return null;
         return React.createElement(
           "div", { className: "ts-block" },
           React.createElement(
             "div", { className: "ts-block-title" },
-            "套餐余额 · 已配置 provider",
+            "套餐余额",
             " ",
             React.createElement(
               "a",
@@ -1016,10 +1070,46 @@ window.__ModuleLoader__.load({
               "(刷新)",
             ),
           ),
-          React.createElement(
-            "div", { className: "ts-quota-list" },
-            configured.map((p) => React.createElement(QuotaCard, { key: p, provider: p, value: quotas[p] })),
-          ),
+          configured.length > 0
+            ? React.createElement(
+                "div", { className: "ts-quota-list" },
+                configured.map((p) => React.createElement(QuotaCard, { key: p, provider: p, value: quotas[p] })),
+              )
+            : null,
+          needsCred.length > 0
+            ? React.createElement(
+                "div", { className: "ts-cred-block" },
+                React.createElement("div", { className: "ts-block-title" }, "凭据设置（粘贴后保存，自动重新拉取）"),
+                needsCred.map((p) => {
+                  const isAuthFailed = quotas[p] && quotas[p].kind === "auth_failed";
+                  return React.createElement(
+                    "div", { key: p, className: "ts-cred-row" },
+                    React.createElement("span", { className: "ts-cred-label" }, quotaProviderLabel(p)),
+                    React.createElement("input", {
+                      type: "password",
+                      className: "ts-cred-input",
+                      placeholder: p === "mimo"
+                        ? (isAuthFailed ? "凭据已失效：重新粘贴 Cookie 或 API Key" : "粘贴登录 Cookie 或 API Key")
+                        : "粘贴 API Key",
+                      value: credDrafts[p] || "",
+                      onChange: (e) => setCredDrafts((d) => ({ ...d, [p]: e.target.value })),
+                      onKeyDown: (e) => {
+                        if (e.key === "Enter") saveCred(p, credDrafts[p] || "");
+                      },
+                    }),
+                    React.createElement(
+                      "button", {
+                        className: "ts-cred-save",
+                        disabled: !!credSaving[p] || !(credDrafts[p] && credDrafts[p].trim()),
+                        onClick: () => saveCred(p, credDrafts[p] || ""),
+                      },
+                      credSaving[p] ? "保存中…" : "保存",
+                    ),
+                    credMsgs[p] ? React.createElement("span", { className: "ts-cred-msg" }, credMsgs[p]) : null,
+                  );
+                }),
+              )
+            : null,
         );
       }
 

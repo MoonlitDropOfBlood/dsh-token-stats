@@ -149,8 +149,11 @@ const QUOTA_PROVIDERS = {
   // XIAOMI_MIMO_API_KEY / XIAOMI_MIMO_COOKIE（或 MIMO_*）任一 ref；route 派生
   // 名（设置页按 route 生成的 XIAOMI_TOKEN_PLAN_CN_API_KEY/_COOKIE，与
   // 其他 provider 的 MINIMAX_CN_* 同规则）同样识别。
+  // Cookie 类 ref 排最前：README 的可靠路径是 Cookie，且 Token 统计页「凭据
+  // 设置」写入 XIAOMI_MIMO_COOKIE——已存在但失效的 API Key（如 route 派生名
+  // 下的 tp- key 被 dashboard 401 拒）不能挡住用户新粘贴 Cookie（v1.5.4）。
   mimo: {
-    refs: ["XIAOMI_TOKEN_PLAN_CN_API_KEY", "XIAOMI_TOKEN_PLAN_CN_COOKIE", "XIAOMI_MIMO_API_KEY", "XIAOMI_MIMO_COOKIE", "MIMO_API_KEY", "MIMO_COOKIE"],
+    refs: ["XIAOMI_MIMO_COOKIE", "XIAOMI_TOKEN_PLAN_CN_COOKIE", "XIAOMI_MIMO_API_KEY", "XIAOMI_TOKEN_PLAN_CN_API_KEY", "MIMO_COOKIE", "MIMO_API_KEY"],
     urls: {
       XIAOMI_TOKEN_PLAN_CN_API_KEY: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
       XIAOMI_TOKEN_PLAN_CN_COOKIE: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
