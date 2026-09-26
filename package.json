@@ -1,6 +1,6 @@
 {
   "name": "@duke-dsh-plugins/dsh-token-stats",
-  "version": "1.5.4",
+  "version": "1.5.5",
   "description": "Token usage statistics for DeepSeek Harness (7/30-day per-model charts + yearly heatmap) plus an inline coding-plan balance/quota readout in the composer (minimax/deepseek/kimi/openrouter/zhipu).",
   "repository": {
     "type": "git",

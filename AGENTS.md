@@ -101,7 +101,7 @@ window.__ModuleLoader__.load({
 ```
 
 要点：
-- `exports.inject` 声明依赖：`["slots", "remote"]`。用 `ctx.slots` 必须声明 `"slots"`；`remote.tokenStats` 命名空间是**自挂载**的（见下），用 `ctx.get("remote.tokenStats")` 读取，不要把它写进 inject。
+- `exports.inject` 声明依赖。用 `ctx.slots` 必须声明 `"slots"`；`remote.tokenStats` 命名空间是**自挂载**的（见下），用 `ctx.get("remote.tokenStats")` 读取，不要把它写进 inject。**官方命名空间（如 `remote.credentials`）必须写进 inject**——cordis 取服务属性强制 inject 声明，缺了报 `cannot get property "remote.credentials" without inject`（v1.5.5 修复，故 inject = `["slots", "remote", "remote.credentials"]`）。
 - **Remote 命名空间必须自挂载**：`await ctx.remote.$mount(CLIENT_REMOTE)`（`dsh-api-remotes` 只挂载官方命名空间）。描述符与 `typert.host.js` 的 invocation 一一对应；浏览器没有 zod，用 passthrough schema（`{ parse: (v) => v }`）——**且每个 strict codec 必须带 `create:` 工厂**（0.1.7 的客户端 typert remote store 与 typert-loader 同契约，缺 create 会让 `$mount` 抛 "has no create() factory" → 命名空间挂不上 → "Remote 未就绪"，v1.5.1 就栽在这里；离线复现见 `scripts/repro-client-mount.mjs`）。
 - **CSS 注入**用 `document.createElement("style")` + `ctx.effect(() => () => styleTag.remove())` 清理（动态插件的 `styles.insert` 在这里不存在）。
 - **轮询/延迟**用浏览器原生 `setInterval`/`setTimeout`，在 `React.useEffect` 里返回清理函数。
@@ -145,7 +145,7 @@ window.__ModuleLoader__.load({
 - 注册用 **`ctx.inject(["slots", "modelDirectories"], scope => scope.slots.inject(...))`** 包裹：该服务由 `dsh-client-ui-model-selection` 提供，缺它的部署里读数不注册、其余功能不受影响。**不要**写进 `exports.inject` 硬依赖（会拖住整个 client 插件）；scope 里用到的每个服务（含 `slots`）都要写进这个 inject 列表（对照 `dsh-client-ui-model-selection` 的写法）。
 - 60s `setInterval` 轮询 + 点击 `loadRef.current(true)` 强制刷新；provider 切换即重取。
 - **悬停面板是自绘的**（`.ts-quota` 容器 `position:relative` + `.ts-quota-pop` 绝对定位卡片，DSW 设计 token + 进度条），**不要退回原生 `title`**（用户嫌丑）。
-- 设置页余额区块 `QuotaSection` 走 `getAllQuotas`：卡片 = 非 `unconfigured` 的 provider；**未配置或 `auth_failed` 的 provider 显示「凭据设置」行**（password 输入 + 保存 → 官方 `remote.credentials.set(QUOTA_CRED_REFS[p], value)`（settings-models 同款用法，`ctx.remote.credentials` 惰性取、不进 inject）→ `load(true)` 强制重拉；mimo 写 `XIAOMI_MIMO_COOKIE`）；全部六种都为 `other` 类错误时整块仍渲染错误卡片。
+- 设置页余额区块 `QuotaSection` 走 `getAllQuotas`：卡片 = 非 `unconfigured` 的 provider；**未配置或 `auth_failed` 的 provider 显示「凭据设置」行**（password 输入 + 保存 → 官方 `remote.credentials.set(QUOTA_CRED_REFS[p], value)`（settings-models 同款用法；`"remote.credentials"` 已在 exports.inject 声明）→ `load(true)` 强制重拉；mimo 写 `XIAOMI_MIMO_COOKIE`）；全部六种都为 `other` 类错误时整块仍渲染错误卡片。
 - 本地没有 node_modules 时，把 DSH 部署的 `@deepseek-ai`/`zod` junction 进 `node_modules/` 即可跑 smoke 脚本（已 gitignore；`smoke:typert` 也吃这套 junction，或用 `DSH_NODE_MODULES` 指向部署 node_modules）。
 
 ## 开发 / 验证

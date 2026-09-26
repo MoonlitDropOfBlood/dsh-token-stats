@@ -1022,8 +1022,8 @@ window.__ModuleLoader__.load({
           if (!ref || !trimmed) return;
           setCredSaving((s) => ({ ...s, [p]: true }));
           try {
-            // 官方 credentials 命名空间（settings-models 同款用法）；不写进
-            // inject 硬依赖，保存时才惰性取，取不到就提示错误。
+            // 官方 credentials 命名空间（settings-models 同款用法；依赖已在
+            // exports.inject 声明——cordis 强制 inject 才能取服务属性，v1.5.5）。
             const ns = (ctx.remote && ctx.remote.credentials) || ctx.get("remote.credentials");
             if (!ns || typeof ns.set !== "function") throw new Error("credentials Remote 不可用");
             const r = await ns.set(ref, trimmed);
@@ -1320,7 +1320,7 @@ window.__ModuleLoader__.load({
     }
 
     exports.apply = apply;
-    exports.inject = ["slots", "remote"];
+    exports.inject = ["slots", "remote", "remote.credentials"];
     return module.exports;
   },
 });
