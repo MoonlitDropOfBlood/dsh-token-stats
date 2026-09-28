@@ -18,8 +18,16 @@
  * (`ctx.remote.tokenStats.getStats()/getQuota()`), published by the Host half
  * in `index.js`.
  */
+/**
+ * This package's client-module id. It is both the `__ModuleLoader__.load` id and
+ * the HMR style owner (`data-plugin`) — client-modules keys style ownership off the
+ * registered id, so the two must stay the same string. See the `claimStyles` note
+ * where the stylesheet is created.
+ */
+const CLIENT_BUNDLE_ID = "@duke-dsh-plugins/dsh-token-stats";
+
 window.__ModuleLoader__.load({
-  id: "@duke-dsh-plugins/dsh-token-stats",
+  id: CLIENT_BUNDLE_ID,
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
@@ -260,6 +268,13 @@ window.__ModuleLoader__.load({
       try {
         styleTag = document.createElement("style");
         styleTag.textContent = CSS;
+        // dsh 0.2.0 client-modules runs `claimStyles(ownerId)` during
+        // materialization, which claims every *untagged* <style> in the document
+        // for the materializing package. `apply()` is async and appends this tag
+        // after that sweep, so without an explicit owner it would stay untagged
+        // and a later package could adopt it — and `removeOwnedStyles(thatId)`
+        // would then strip our stylesheet on its HMR invalidation. Claim it now.
+        styleTag.setAttribute("data-plugin", CLIENT_BUNDLE_ID);
         document.head.appendChild(styleTag);
         ctx.effect(() => () => styleTag && styleTag.remove());
       } catch (e) {
@@ -667,16 +682,16 @@ window.__ModuleLoader__.load({
         if (lower.includes("mimo") || lower.includes("xiaomi")) return "mimo";
         return null;
       }
-      // 凭据设置行写入的 ref — 与 host QUOTA_PROVIDERS.refs 首选项对齐。
-      // mimo 写 XIAOMI_MIMO_COOKIE（README 文档路径），不触碰 LLM 路由的
-      // API Key ref（host probe 顺序 Cookie 优先，v1.5.4）。
+      // 凭据设置行写入的 ref — 与 host QUOTA_PROVIDERS.apiKeyRefs 首选项对齐。
+      // mimo 写 XIAOMI_MIMO_API_KEY（v1.6.0 起推荐：Bearer /v1/user/balance
+      // 与路由 LLM API Key 同源，稳定不易过期；Cookie 仍可作为兜底探测）。
       const QUOTA_CRED_REFS = {
         minimax: "MINIMAX_CN_API_KEY",
         deepseek: "DEEPSEEK_API_KEY",
         kimi: "KIMI_CODING_API_KEY",
         openrouter: "OPENROUTER_API_KEY",
         zhipu: "ZAI_CODING_CN_API_KEY",
-        mimo: "XIAOMI_MIMO_COOKIE",
+        mimo: "XIAOMI_MIMO_API_KEY",
       };
       const QUOTA_PROVIDER_ORDER = ["minimax", "deepseek", "kimi", "openrouter", "zhipu", "mimo"];
 
@@ -708,8 +723,12 @@ window.__ModuleLoader__.load({
           return [labelEl, React.createElement("span", { key: "b", style: strong }, txt)];
         }
         if (provider === "mimo") {
-          // MiMo Token Plan：套餐已用% + 本月总额度%（detail 缺失时可能只有一行）
+          // MiMo：PAYG 显示 CNY 余额，Token Plan 显示 套餐% + 本月%。
           const parts = [labelEl];
+          if (typeof d.balanceText === "string" && d.balanceText) {
+            parts.push(React.createElement("span", { key: "bal", style: strong }, d.balanceText));
+            return parts;
+          }
           if (typeof d.fiveHrPct === "number") {
             parts.push(React.createElement("span", { key: "plan", style: strong }, "套餐 " + d.fiveHrPct + "%"));
           }
@@ -1089,7 +1108,9 @@ window.__ModuleLoader__.load({
                       type: "password",
                       className: "ts-cred-input",
                       placeholder: p === "mimo"
-                        ? (isAuthFailed ? "凭据已失效：重新粘贴 Cookie 或 API Key" : "粘贴登录 Cookie 或 API Key")
+                        ? (isAuthFailed
+                            ? "凭据失效：粘贴新的 API Key（推荐）或 Cookie"
+                            : "推荐粘贴 API Key (tp-...)，与 LLM 路由同源不易过期；Cookie 也能用")
                         : "粘贴 API Key",
                       value: credDrafts[p] || "",
                       onChange: (e) => setCredDrafts((d) => ({ ...d, [p]: e.target.value })),

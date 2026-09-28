@@ -1,6 +1,6 @@
 {
   "name": "@duke-dsh-plugins/dsh-token-stats",
-  "version": "1.5.5",
+  "version": "1.6.0",
   "description": "Token usage statistics for DeepSeek Harness (7/30-day per-model charts + yearly heatmap) plus an inline coding-plan balance/quota readout in the composer (minimax/deepseek/kimi/openrouter/zhipu).",
   "repository": {
     "type": "git",
@@ -27,7 +27,7 @@
   ],
   "license": "MIT",
   "engines": {
-    "dsh": ">=0.1.4-rc.2 <0.2.0"
+    "dsh": ">=0.1.4-rc.2 <0.3.0"
   },
   "dsh": {
     "bundle": {
@@ -39,8 +39,8 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh": ">=0.1.4-rc.2 <0.2.0",
-    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.7"
+    "@deepseek-ai/dsh": ">=0.1.4-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.7 || ^0.2.0-rc.1"
   },
   "dependencies": {
     "zod": "^4.4.3"
@@ -50,6 +50,8 @@
     "smoke": "node scripts/smoke-store.mjs",
     "smoke:quota": "node scripts/smoke-quota.mjs",
     "smoke:robust": "node scripts/smoke-robust-host.mjs && node scripts/smoke-robust-client.mjs",
-    "smoke:typert": "node scripts/smoke-typert.mjs"
+    "smoke:typert": "node scripts/smoke-typert.mjs",
+    "smoke:compat": "node scripts/smoke-compat.mjs",
+    "e2e": "npm run check && npm run smoke && npm run smoke:quota && npm run smoke:robust && npm run smoke:typert && npm run smoke:compat && node scripts/repro-client-mount.mjs && node scripts/repro-strict-dispatch.mjs && node scripts/repro-profile-boot.mjs"
   }
 }

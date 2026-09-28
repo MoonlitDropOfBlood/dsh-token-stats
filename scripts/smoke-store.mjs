@@ -10,14 +10,16 @@
 import { mkdtempSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const fakeHome = mkdtempSync(join(tmpdir(), "dsh-ts-home-"));
 process.env.DSH_HOME = fakeHome;
 
+// Default to THIS package's own index.js so `npm run e2e` is self-contained;
+// TOKEN_STATS_PLUGIN still overrides (e.g. to test an installed copy).
 const PLUGIN =
   process.env.TOKEN_STATS_PLUGIN ||
-  "C:/Users/wwhby/.dsh/profiles/web/node_modules/dsh-token-stats/index.js";
+  fileURLToPath(new URL("../index.js", import.meta.url));
 const { TokenStatsService } = await import(pathToFileURL(PLUGIN).href);
 
 const initKey = Object.getOwnPropertySymbols(TokenStatsService.prototype).find(

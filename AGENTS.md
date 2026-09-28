@@ -22,11 +22,16 @@ dsh-token-stats/
 ├── typert.host.js        # Typert Host manifest：tokenStats Remote 服务的 schema/调用描述
 ├── cordis.patch.yml      # dsh bundle patch（挂载行）
 ├── .github/workflows/release.yml  # 打 v* 标签时构建并发布 GitHub Release
-├── scripts/smoke-store.mjs   # store 持久化冒烟（TOKEN_STATS_PLUGIN 指定被测 index.js）
+├── scripts/smoke-store.mjs   # store 持久化冒烟（TOKEN_STATS_PLUGIN 指定被测 index.js；缺省测本包 index.js）
 ├── scripts/smoke-quota.mjs   # quota 路径冒烟（stub _httpGet/_quotaApiKey 驱动各 provider fixture）
 ├── scripts/smoke-robust-host.mjs    # 0.1.7 容错回归：host init 在恶劣 seam 下不抛
 ├── scripts/smoke-robust-client.mjs  # 0.1.7 容错回归：client apply 在恶劣 seam 下不 reject
 ├── scripts/smoke-typert.mjs         # 用部署侧 dsh-typert-loader 真校验器跑 TYPERT manifest
+├── scripts/smoke-compat.mjs         # 用部署侧 dsh-app-boot 的 evaluatePluginCompatibility 预检本包 manifest
+├── scripts/repro-client-mount.mjs   # 用部署侧真 client 网关跑 $mount，验证 client 描述符能挂上
+├── scripts/repro-strict-dispatch.mjs # 用部署侧真 TypertRegistry+Gateway 跑 invokeRpc（0.2.0 strict dispatch 回归）
+├── scripts/repro-all-manifests.mjs  # 全组合 typert manifest 注册冲突排查（手动诊断用）
+├── scripts/repro-profile-boot.mjs   # 启动预演：真实 loadProfileDirectory+composeEntries 跑本机 profile，断言本 bundle 不被静默跳过
 ├── AGENTS.md             # 本文件
 ├── README.md
 └── LICENSE               # MIT
@@ -131,8 +136,25 @@ window.__ModuleLoader__.load({
 `tokenStats.getQuota(provider, force)` 给 composer 工具行的内联读数供数；`tokenStats.getAllQuotas(force)` 并行拉全部 6 个 provider（设置页「套餐余额」区块用，返回 `{ quotas: Record<provider, QuotaValue> }`）：
 
 - **凭据**：`ctx.get("credentials").resolve(ref)`；ref 候选遵循设置页派生规则 `<ROUTE>_API_KEY`（`provider.toUpperCase().replace(/[^A-Z0-9]+/g,"_")+"_API_KEY"`，见 `dsh-client-ui-settings-models` 的 `deriveKeyRef`）+ 各 provider 的内置默认 `apiKeyEnv`（deepseek-official 路由实际用 `DEEPSEEK_API_KEY`，见 `dsh-base/cordis.patch.yml`）。无 credentials 服务时回退 `process.env[ref]`。**不要**自己存 keys。
+- **v1.6.0 起 `_quotaApiKey(provider)` 同时解析 API Key 与 Cookie**（仅 mimo 用 Cookie），返回 `{ apiKey, apiKeyRef, cookie, cookieRef }`。`_quotaActiveRef[provider + ":api" | ":cookie"]` 按 provider+kind 缓存上次命中的 ref，保持粘性但两路互不锁定 — Cookie 失效时不锁住 API Key 路径。其他 provider 走单 API Key 路径（`apiKeyRefs` 字段未声明时回退旧 `refs` 数组）。
 - **HTTP**：宿主全局 `fetch` 优先（Electron/Node 18+ 必有），`AbortSignal.timeout(15s)`；`typeof fetch !== "function"` 时回退 `ctx.get("subprocess")` spawn curl（musage 的形态）。zhipu 的 `Authorization` **不加** `Bearer ` 前缀（`authStyle: "raw"`）。
-- **mimo（小米 MiMo Token Plan，v1.5.0 起）**：dashboard admin API（非公开）：`platform.xiaomimimo.com/api/v1/tokenPlan/usage` + `/detail`。纯 Bearer 实测 401（session 守护），可靠凭证是浏览器登录 Cookie → 同一凭证值**先 Bearer 后 `Cookie:` 头自动重试**（对齐 Musage xiaomi.rs 的 BearerThenCookie；`authStyle: "cookie"`）。凭据 ref 候选（v1.5.4 起 **Cookie 优先**——已存在但失效的 API Key 不能挡住用户新粘贴的 Cookie）：`XIAOMI_MIMO_COOKIE / XIAOMI_TOKEN_PLAN_CN_COOKIE / XIAOMI_MIMO_API_KEY / XIAOMI_TOKEN_PLAN_CN_API_KEY / MIMO_COOKIE / MIMO_API_KEY`（route 派生名与其他 provider 的 `MINIMAX_CN_*` 同规则，v1.5.3 起；route id 用户命名，client 侧 `PROVIDER_ALIASES` 收 `xiaomi-mimo / xiaomimimo / xiaomi-token-plan-cn / mimo`，另对含 `xiaomi`/`mimo` 的 route 做包含回退）。「凭据设置」UI（v1.5.4 起）写入 `XIAOMI_MIMO_COOKIE`（**不碰 LLM 路由的 API Key ref**）。解析：`code:0` 成功（**业务 40100–40199 → auth_failed**）；`usage.items[]` 的 `plan_total_token`/`compensation_total_token` + `monthUsage.items[]` 的 `month_total_token`，**percent 是 0–1 小数（×100）**，缺 percent 回退 `used/limit`；套餐与月度总额度相差 <0.5pt 去重；detail 给 `currentPeriodEnd`（UTC 字符串）→ 重置倒计时、`expired:true` → `plan_expired` 错误引导续费。client 显示 `套餐 X% | 本月 Y%`（复用 fiveHrPct/weeklyPct 字段，标签按 provider 切换，不写死 5h/7d）。
+- **mimo（小米 MiMo Token Plan，v1.6.0 起多端点探测链）**：对齐 [quotas crate mimo.rs](https://docs.rs/quotas/latest/src/quotas/providers/mimo.rs.html) 与 [CodexBar docs/mimo.md](https://github.com/steipete/CodexBar/blob/main/docs/mimo.md)。用户给 LLM 路由配的 `tp-...` API Key 本身就能 Bearer 鉴权 `/v1/user/balance` 或 `/api/v1/tokenPlan/usage`，**远比 dashboard Cookie 稳定**。探测链（Bearer 优先，Cookie 兜底）：
+  1. `Bearer` `token-plan-sgp.xiaomimimo.com/v1/user/balance` — Token Plan token_balance/token_limit
+  2. `Bearer` `api.xiaomimimo.com/v1/user/balance` — PAYG CNY balance
+  3. `Bearer` `token-plan-sgp.xiaomimimo.com/api/v1/tokenPlan/usage` — Token Plan 套餐% + 月度%
+  4. `Bearer` `platform.xiaomimimo.com/api/v1/tokenPlan/usage` — Bearer 平台端点
+  5. `Cookie` `platform.xiaomimimo.com/api/v1/tokenPlan/usage` — dashboard session 兜底
+  6. `Cookie` `token-plan-sgp.xiaomimimo.com/api/v1/tokenPlan/usage` — SGP dashboard 兜底
+
+  每个端点 HTTP 200 后用对应 parser；业务 401xx → 进入下一端点；parse 失败（非凭据）→ 直接返回。usage 端点成功先拉 detail（同鉴权）补 reset 时间，`expired:true` → `plan_expired` 错误引导续费（**detail 必须在 usage parse 之前 fetch**，否则空 items 会先短路返回 parse 错误掩盖过期标记）。
+
+  凭据 ref 候选（v1.6.0 起 API Key / Cookie 分两组）：`apiKeyRefs: [XIAOMI_MIMO_API_KEY, XIAOMI_TOKEN_PLAN_CN_API_KEY, MIMO_API_KEY]` + `cookieRefs: [XIAOMI_MIMO_COOKIE, XIAOMI_TOKEN_PLAN_CN_COOKIE, MIMO_COOKIE]`。route 派生名（`XIAOMI_TOKEN_PLAN_CN_*`）与其他 provider 的 `MINIMAX_CN_*` 同规则；route id 用户自由命名，client 侧 `PROVIDER_ALIASES` 收 `xiaomi-mimo / xiaomimimo / xiaomi-token-plan-cn / mimo`，另对含 `xiaomi`/`mimo` 的 route 做包含回退。「凭据设置」UI **默认写入 `XIAOMI_MIMO_API_KEY`**（v1.6.0 起推荐：与 LLM 路由同源不易过期，Cookie 仍可作为兜底探测）；placeholder 提示「推荐粘贴 API Key（tp-...），与 LLM 路由同源不易过期；Cookie 也能用」。已有 Cookie 的旧用户不受影响（探测链自动 Cookie 兜底）。
+
+  解析：两条响应 shape —
+  - `/api/v1/tokenPlan/usage`：`{ code:0, data: { usage:{items:[{name,percent,used,limit}]}, monthUsage:{items:[{name,percent,used,limit}]} } }`，`code:0` 成功（业务 40100–40199 → auth_failed），percent 0–1 小数（×100），缺 percent 回退 `used/limit`，套餐与月度总额度相差 <0.5pt 去重；detail 给 `currentPeriodEnd`（UTC 字符串）→ 重置倒计时、`expired:true` → `plan_expired`。
+  - `/v1/user/balance`：`{ data: { token_balance, token_limit, plan_name, balance, charge_balance, granted_balance } }`，Token Plan 用 token_balance/token_limit 算套餐已用%；PAYG 用 balance 字段（CNY，字符串或数字，`formatBalance(12.5, "CNY")` → `"¥12.50"`）。
+
+  client 显示：Token Plan `套餐 X% | 本月 Y%`（复用 fiveHrPct/weeklyPct 字段）；PAYG `MiMo ¥12.50`（balanceText 占位，composer 工具行 + 设置页余额卡片都支持）。
 - **缓存**：每 provider 成功 30s TTL；失败指数退避 5s→30min（`streak` 递增）；`force=true` 先清缓存再拉（客户端点击读数时传）。
 - **wire 形状**：`{ ok:true, value }` 信封内 `value` 是判别联合——成功 `{ ok:true, provider, display:{fiveHrPct,weeklyPct,fiveHrResetsIn,weeklyResetsIn,balanceText,balanceUsd,currency} }`（7 个字段恒在，缺省为 null），失败 `{ ok:false, provider, kind, message }`。typert.host.js 的 zod schema 与此**逐字段对应**，改返回值必须同步改 schema（网关 strict 校验）。
 - **不落盘**：quota 状态纯内存（`_quotaCache`/`_quotaActiveRef`），与 stats store 完全无关，STORE_VERSION 不需要动。
@@ -145,17 +167,21 @@ window.__ModuleLoader__.load({
 - 注册用 **`ctx.inject(["slots", "modelDirectories"], scope => scope.slots.inject(...))`** 包裹：该服务由 `dsh-client-ui-model-selection` 提供，缺它的部署里读数不注册、其余功能不受影响。**不要**写进 `exports.inject` 硬依赖（会拖住整个 client 插件）；scope 里用到的每个服务（含 `slots`）都要写进这个 inject 列表（对照 `dsh-client-ui-model-selection` 的写法）。
 - 60s `setInterval` 轮询 + 点击 `loadRef.current(true)` 强制刷新；provider 切换即重取。
 - **悬停面板是自绘的**（`.ts-quota` 容器 `position:relative` + `.ts-quota-pop` 绝对定位卡片，DSW 设计 token + 进度条），**不要退回原生 `title`**（用户嫌丑）。
-- 设置页余额区块 `QuotaSection` 走 `getAllQuotas`：卡片 = 非 `unconfigured` 的 provider；**未配置或 `auth_failed` 的 provider 显示「凭据设置」行**（password 输入 + 保存 → 官方 `remote.credentials.set(QUOTA_CRED_REFS[p], value)`（settings-models 同款用法；`"remote.credentials"` 已在 exports.inject 声明）→ `load(true)` 强制重拉；mimo 写 `XIAOMI_MIMO_COOKIE`）；全部六种都为 `other` 类错误时整块仍渲染错误卡片。
+- 设置页余额区块 `QuotaSection` 走 `getAllQuotas`：卡片 = 非 `unconfigured` 的 provider；**未配置或 `auth_failed` 的 provider 显示「凭据设置」行**（password 输入 + 保存 → 官方 `remote.credentials.set(QUOTA_CRED_REFS[p], value)`（settings-models 同款用法；`"remote.credentials"` 已在 exports.inject 声明）→ `load(true)` 强制重拉；mimo v1.6.0 起默认写 `XIAOMI_MIMO_API_KEY` — 与 LLM 路由同源不易过期）；全部六种都为 `other` 类错误时整块仍渲染错误卡片。
 - 本地没有 node_modules 时，把 DSH 部署的 `@deepseek-ai`/`zod` junction 进 `node_modules/` 即可跑 smoke 脚本（已 gitignore；`smoke:typert` 也吃这套 junction，或用 `DSH_NODE_MODULES` 指向部署 node_modules）。
 
 ## 开发 / 验证
 
 ```bash
+npm run e2e              # 全链路：check + 全部 smoke + 3 个 repro（含启动预演；最终验收命令）
 npm run check            # node --check index.js client.js typert.host.js
 npm run smoke:quota      # quota 解析/缓存/信封冒烟（无需 DSH）
 npm run smoke:robust     # 0.1.7 容错回归：host init / client apply 在恶劣 seam 下不抛（无需 DSH）
 npm run smoke:typert     # 用部署侧 dsh-typert-loader 的 validateTypertManifest 真校验 TYPERT（需 junction，见下）
-node scripts/repro-client-mount.mjs   # 用部署侧真 client 网关跑 $mount，验证 client 描述符能挂上（需 junction）
+npm run smoke:compat     # 用部署侧 dsh-app-boot 真兼容门预检 manifest（防"静默跳过"，见 0.2.0 小节）
+node scripts/repro-client-mount.mjs     # 用部署侧真 client 网关跑 $mount，验证 client 描述符能挂上（需 junction）
+node scripts/repro-strict-dispatch.mjs  # 用部署侧真 TypertRegistry+Gateway invokeRpc 驱动本包三个 Remote 方法（需 junction）
+node scripts/repro-profile-boot.mjs     # 启动预演：真实 loadProfileDirectory+composeEntries 跑 DSH_PROFILE_DIR，断言 bundle 不被跳过
 dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机 DSH profile
 ```
 
@@ -168,9 +194,21 @@ dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机
 - **版本兼容预检**：0.1.7 安装/启动时用 `semver.satisfies(runtime, peer范围, {includePrerelease:true})` 检查所有 `@deepseek-ai/dsh*` peer。`^0.1.0-rc.7` 在 includePrerelease 下**能**命中 `0.1.7-rc.1`（已核对 `plugin-compatibility.ts` 源码），不会误伤；显式声明 `@deepseek-ai/dsh` peer（与 `engines.dsh` 同串）作为运行时契约文档。
 - **共享 peer fallback writer 退役**：0.1.7 主进程改用内存路由表 + ESM/CJS 拦截（`profile-resolution/resolver.ts`），link 插件按"祖先目录 manifest 的 peerDependencies 声明"路由到安装副本——所以**插件的 peer 声明必须真实**，改名/删 peer 会破坏解析。
 - `markRemoteMethod` 手动驱动 `Remote()` 的方式在 0.1.7 协议（`REMOTE_METHOD_DESCRIPTOR` v1 + `addInitializer`）下**仍然兼容**，已核对；仍保留 try/catch 防未来漂移。
-- **dsh-market 兼容显示（v1.5.0 起）**：市场从已发布 npm manifest 读取 `engines.dsh`（顶层，优先）或 `dsh.engines.dsh`，加上所有 `@deepseek-ai/dsh*` peer（`discovery-compatibility.js`：engine 严格 semver、peer 方向性策略，全部声明取交集），在插件卡片显示"宿主要求 {range}"并驱动"适配本机 DSH"筛选与安装阻断。本插件声明 `engines.dsh: ">=0.1.4-rc.2 <0.2.0"`（与 `@deepseek-ai/dsh` peer 同串，展示去重）+ `dsh-typert-protocol ^0.1.0-rc.7`；改支持版本时**三处同步改**。注意：市场按 `${registry}/${name}/latest` 拉 manifest，**必须发新版 npm 才生效**（成功结果缓存 24h）。
+- **dsh-market 兼容显示（v1.5.0 起）**：市场从已发布 npm manifest 读取 `engines.dsh`（顶层，优先）或 `dsh.engines.dsh`，加上所有 `@deepseek-ai/dsh*` peer（`discovery-compatibility.js`：engine 严格 semver、peer 方向性策略，全部声明取交集），在插件卡片显示"宿主要求 {range}"并驱动"适配本机 DSH"筛选与安装阻断。本插件声明（v1.6.0 起）`engines.dsh: ">=0.1.4-rc.2 <0.3.0"`（与 `@deepseek-ai/dsh` peer 同串，展示去重）+ `dsh-typert-protocol "^0.1.0-rc.7 || ^0.2.0-rc.1"`；改支持版本时**三处同步改**。注意：市场按 `${registry}/${name}/latest` 拉 manifest，**必须发新版 npm 才生效**（成功结果缓存 24h）。
 - **typert manifest 的 strict codec 必须带 `create()` 工厂（host + client 两侧都强制）**：typert-loader 的 `requireStrictCodec` 对每个 `mode:"strict"` 的 codec 强制 `typeSymbol` 非空 + `typeof create === "function"`，缺一个**整个 manifest 拒载**——v1.5.0 因此从未注册成功（事故一，v1.5.1 修复 host 侧）；**client.js 的 `$mount` 描述符同样被 0.1.7 客户端 remote store 拒载**（`typert: ... strict codec has no create() factory`）→ 命名空间挂不上 → 统计页/余额全灭（事故二，v1.5.2 补齐 client 侧）。新增/修改 codec 后**必须**跑 `npm run smoke:typert` + `node scripts/repro-client-mount.mjs`（都 import 部署侧真代码；`npm run check` 只查语法，抓不住这类 schema 形态错误）。正确形态参照 `dsh-archive-manager/typert.host.js`（`schema: factory()` + `create: factory` 双字段）或官方生成物（仅 `create`，schema 由工厂产出）。
 - 参考：[0.1.7-rc.1 release notes](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.7-rc.1)、[#7635 讨论](https://github.com/deepseek-ai/deepseek-harness/discussions/7635)（子进程 peer 解析回归，与本插件无关但同源）。
+
+### 0.2.0-rc.1 兼容（v1.6.0 起）
+
+在 0.2.0-rc.1 上"插件无法加载"的完整根因链与应对（已全部修复，`npm run e2e` 全绿）：
+
+- **根因是兼容门把整个 bundle 静默跳过，不是运行时崩溃**：0.2.0 的 `dsh-app-boot.loadProfileDirectory` 对每个 profile bundle 跑 `evaluatePluginCompatibility`（检查 **engines.dsh + 全部 `@deepseek-ai/dsh*` peer**），不命中就 `throw` 进 `skippedBundles`——挂载行不进组合、`index.js` 不加载、client bundle 不注入、UI **无任何报错**。当时的 `dsh-typert-protocol: "^0.1.0-rc.7"` 命不中 0.2.0-rc.1，整个插件就这样消失。陷阱：`semver.satisfies(0.2.0-rc.1, "… <0.2.0", {includePrerelease:true})` 是**真**（prerelease 排在自己版本号之前），所以 `<0.2.0` 的 dsh 范围对 rc 阶段"看起来没问题"，却挡不住别的 peer 出事；**判断"会不会被跳过"只能信真兼容门**——`npm run smoke:compat` 就是直接调部署侧 `evaluatePluginCompatibility` 预检本包 manifest。
+- **版本范围（v1.6.0 起）**：`engines.dsh` 与 `@deepseek-ai/dsh` peer 同串 `">=0.1.4-rc.2 <0.3.0"`；`@deepseek-ai/dsh-typert-protocol: "^0.1.0-rc.7 || ^0.2.0-rc.1"`。改支持版本时**三处同步改**（engines、dsh peer、typert-protocol peer），并跑 `npm run smoke:compat` + `node scripts/repro-profile-boot.mjs` 验证。
+- **client-modules 的样式归属改为 claim 制（0.2.0 行为，回溯兼容）**：materialize 包时跑 `claimStyles(ownerId)`，把文档里所有**无 `data-plugin` 属性的 `<style>`** 认领给正在物化的包；`removeOwnedStyles(id)`（HMR invalidate/重载）会移除 `data-plugin=<id>` 的全部样式表。`apply()` 是异步的，插件样式表在 sweep 之后才插入——不预打标就会被后续包认领、被别人的卸载连带删掉。→ client.js 建 style tag 时立即 `styleTag.setAttribute("data-plugin", CLIENT_BUNDLE_ID)`（0.1.x 忽略该属性，无害）。**`CLIENT_BUNDLE_ID` 必须与 `__ModuleLoader__.load` 的 id、即包名完全一致**。
+- **typert strict dispatch 在 0.2.0 下无回归**：用部署侧真 `Context + TypertRegistry + TypertGatewayService.invokeRpc` 驱动本包三个 Remote 方法全通过（`scripts/repro-strict-dispatch.mjs`）；typert manifest 校验（6 strict codec × create 工厂）同样通过。`markRemoteMethod` 手动驱动方式、`TypertRemoteService` 契约、`session/event`/`sessionQuery`/`credentials`/`modelDirectories` seam 名均未变（已对部署源码逐一核对）。
+- **组合只在启动时应用，装完必须重启**：0.2.0 的 host-runner 不 watch profile（`loadProfileDirectory` 无任何 reload 路径），`plugin_manager` 安装成功（`application: applied`）只表示 profile package.json/链接就位，运行中的宿主不会热挂载。装好后**重启 DSH**，然后 `node scripts/repro-profile-boot.mjs` 可在重启前预演真实 boot 组合（真实 `loadProfileDirectory`+`composeEntries` 跑本机 profile，断言本 bundle 不进 skippedBundles、挂载行进组合、Host 半能从 profile 链接 import）。
+- **smoke-store 的被测文件缺省改为本包 `index.js`**（原硬编码 profile 路径在插件未装/装成 scoped 目录名时直接 `ERR_MODULE_NOT_FOUND`）；`TOKEN_STATS_PLUGIN` 仍可覆盖。
+
 
 改插件后**必须重启 DSH 进程**才生效（动态 HMR 不适用于正式安装的插件）。验证：
 1. 设置 → 侧栏导航出现 **Token 统计**。
