@@ -142,40 +142,61 @@ const QUOTA_PROVIDERS = {
     // 智谱特殊: Authorization 不加 "Bearer " 前缀 (来自 Musage zhipu.rs 注释)
     authStyle: "raw",
   },
-  // Xiaomi MiMo Token Plan — 多端点探测 (v1.6.0 起)：
-  // 可靠路径是用户给 LLM 路由配的 API Key（tp-..., Bearer 鉴权）走
-  //   /v1/user/balance 或 /api/v1/tokenPlan/usage (Bearer 端点)。
-  // dashboard Cookie 路径（platform.xiaomimimo.com）作为兜底——Cookie 容易
-  // 过期，但仍有用户在用。Endpoint 链见 _fetchMimoQuota。
-  // 凭据 ref 命名沿用设置页派生规则：
-  //   - apiKey 走 Bearer: XIAOMI_MIMO_API_KEY / XIAOMI_TOKEN_PLAN_CN_API_KEY / MIMO_API_KEY
-  //   - cookie 走 Cookie: XIAOMI_MIMO_COOKIE / XIAOMI_TOKEN_PLAN_CN_COOKIE / MIMO_COOKIE
-  // 凭据设置 UI 默认写入 XIAOMI_MIMO_API_KEY (v1.6.0 起推荐路径)；
-  // 已有 Cookie 的旧用户不受影响（探测链自动用 Cookie 兜底）。
+  // Xiaomi MiMo Token Plan — **零凭据可用**（v1.7.0 起重写）。
+  //
+  // 实测（2026-09，scripts/probe-mimo.mjs / probe-mimo-nocookie.mjs）：
+  //  · token-plan-{cn,sgp,ams} 与 api. 主机**只有 OpenAI 兼容的 /v1 推理 API**，
+  //    `/v1/user/balance`、`/api/v1/tokenPlan/usage`、`/api/v1/user/usage` 全部
+  //    404 —— MiMo 没有给 API Key 开任何配额接口。
+  //  · key 与区域强绑定（CN key 在 sgp/ams/api 一律 401 invalid_key），所以也不
+  //    能"换主机重试"。
+  //  · 唯一存在的配额接口是 platform dashboard 的 `/api/v1/user/usage`
+  //    （`{percent, resetDate}`，percent = **剩余**百分比；也是 MiMo 桌面端
+  //    IPC `mimo:getUserUsage` 的同一条链路），但它只认小米账号会话 Cookie。
+  //    拿 tp- key 冒充 serviceToken / X-Service-Token / ?apiKey= 全部 401。
+  //  → v1.6.0 用户看到的 401 正是"把 API Key 打了只认 Cookie 的 dashboard"，
+  //    与 key 是否有效无关。
+  //
+  // 因此不再使用 API Key 读配额（`apiKeyRefs` 已移除）：默认走**本地用量**
+  // （本插件已有的会话日志聚合，零凭据、零过期），配置了 Cookie 时自动升级为
+  // 官方「剩余用量 % + 周重置」，Cookie 失效则静默退回本地读数。
   mimo: {
-    // Bearer 鉴权 ref 候选 (DSH 模型设置里配的 LLM 路由 API Key / tp-...)
-    apiKeyRefs: ["XIAOMI_MIMO_API_KEY", "XIAOMI_TOKEN_PLAN_CN_API_KEY", "MIMO_API_KEY"],
-    // Cookie 鉴权 ref 候选 (浏览器 dashboard session, Bearer 失败时的兜底)
+    // dashboard 会话 Cookie（唯一能拿到官方套餐 % 的凭据）
     cookieRefs: ["XIAOMI_MIMO_COOKIE", "XIAOMI_TOKEN_PLAN_CN_COOKIE", "MIMO_COOKIE"],
     parse: parseMimoResponse,
   },
 };
 
-/** Xiaomi MiMo 多端点常量 — usage 走 Bearer/Cookie 双探, balance 走 Bearer (PAYG + Token Plan SGP)。
- *  协议来源：https://docs.rs/quotas/latest/src/quotas/providers/mimo.rs.html (clankercode/quotas, MIT)
- *  与 https://github.com/steipete/CodexBar/blob/main/docs/mimo.md (CodexBar, MIT)。
- *  Bearer 鉴权用 LLM 路由 API Key (tp-...) 即可，Cookie 是 dashboard session 兜底。 */
+/** Xiaomi MiMo 常量 —— 唯一可用的配额接口在 dashboard，且只认账号会话 Cookie。
+ *  协议来源：MiMo 桌面端 IPC `mimo:getUserUsage`（逆向记录见
+ *  https://github.com/ethanweave/mimo-composer-token-status/blob/main/docs/INVESTIGATION.md）、
+ *  CodexBar docs/mimo.md（MIT）、quotas crate mimo.rs（Unlicense）。*/
 const MIMO_PLATFORM = "https://platform.xiaomimimo.com";
-const MIMO_PAYG_BASE = "https://api.xiaomimimo.com";
-const MIMO_TOKEN_PLAN_SGP = "https://token-plan-sgp.xiaomimimo.com";
-/** /api/v1/tokenPlan/usage + /detail（Bearer 或 Cookie，套餐 % + 重置时间）。 */
+/** 官方桌面端同款：GET {accountBase}/user/usage → { percent(剩余), resetDate }。*/
+const MIMO_USER_USAGE_URL = `${MIMO_PLATFORM}/api/v1/user/usage`;
+/** 旧版套餐明细端点（保留兜底：部分账号只有它给数；已用比例 + 重置时间）。*/
 const MIMO_USAGE_URL = `${MIMO_PLATFORM}/api/v1/tokenPlan/usage`;
 const MIMO_DETAIL_URL = `${MIMO_PLATFORM}/api/v1/tokenPlan/detail`;
-const MIMO_TOKEN_PLAN_SGP_USAGE_URL = `${MIMO_TOKEN_PLAN_SGP}/api/v1/tokenPlan/usage`;
-const MIMO_TOKEN_PLAN_SGP_DETAIL_URL = `${MIMO_TOKEN_PLAN_SGP}/api/v1/tokenPlan/detail`;
-/** /v1/user/balance（仅 Bearer：Token Plan token_balance/token_limit 或 PAYG CNY balance）。 */
-const MIMO_PAYG_BALANCE_URL = `${MIMO_PAYG_BASE}/v1/user/balance`;
-const MIMO_TOKEN_PLAN_SGP_BALANCE_URL = `${MIMO_TOKEN_PLAN_SGP}/v1/user/balance`;
+/** dashboard 必需 Cookie 名（CodexBar docs/mimo.md）：缺失就给明确指引。 */
+const MIMO_COOKIE_REQUIRED = ["api-platform_serviceToken", "userId"];
+/** dashboard admin API 需要的额外请求头（quotas crate mimo.rs 用 accept-language: en）。*/
+const MIMO_PLATFORM_HEADERS = { "accept-language": "en" };
+
+/** `"a=1; b=2"` → Map{name: value}（容忍空格、容忍值里有 `=`）。 */
+function cookieStringToMap(s) {
+  const out = new Map();
+  for (const part of String(s || "").split(";")) {
+    const i = part.indexOf("=");
+    if (i <= 0) continue;
+    out.set(part.slice(0, i).trim(), part.slice(i + 1).trim());
+  }
+  return out;
+}
+
+/** Map → `"a=1; b=2"`。 */
+function cookieMapToString(m) {
+  return [...m].map(([k, v]) => k + "=" + v).join("; ");
+}
 
 function quotaBackoffMs(streak) {
   if (streak <= 0) return 0;
@@ -556,33 +577,29 @@ function parseMimoResponse(body, detailBody) {
   };
 }
 
-// ----- xiaomi mimo /v1/user/balance parser (Bearer-only, 优先路径) -----
-//   PAYG 账号：
-//     { data: { balance: "12.50", charge_balance: "10.00",
-//               granted_balance: "2.50", plan: "PAYG" } }
-//   Token Plan 账号：
-//     { data: { token_balance: 800000, token_limit: 1000000,
-//               plan_name: "Pro" } }
-// balance 可能是字符串或数字（来自 Rust 端 serde 默认行为）。
-// 数据本身已含 plan 字段，无需再拉 detail。
+// ----- xiaomi mimo /api/v1/user/usage parser (v1.7.0，官方桌面端同款链路) -----
+//   { "percent": 78, "resetDate": "2026-09-16" }
+// **percent 是「剩余」百分比**（账户菜单「剩余用量 78%」），与上面
+// tokenPlan/usage 的 items[].percent（**已用**比例）语义相反，别混用。
+// wire 里 fiveHrPct/weeklyPct 一律是「已用 %」，所以取 100 - percent。
 
-function parseMimoBalanceResponse(body /*, detailBody — unused, balance 端点不含 detail */) {
+function parseMimoUserUsage(body) {
   let json;
   try {
     json = typeof body === "string" ? JSON.parse(body) : body;
   } catch {
-    return { ok: false, provider: "mimo", kind: "parse", message: "MiMo balance 响应 JSON 解析失败" };
+    return { ok: false, provider: "mimo", kind: "parse", message: "MiMo 响应 JSON 解析失败" };
   }
   if (!json || typeof json !== "object") {
-    return { ok: false, provider: "mimo", kind: "parse", message: "MiMo balance 响应不是对象" };
+    return { ok: false, provider: "mimo", kind: "parse", message: "MiMo 响应不是对象" };
   }
   if (typeof json.code === "number" && json.code !== 0) {
-    if (json.code >= 40100 && json.code < 40200) {
+    if (json.code === 401 || (json.code >= 40100 && json.code < 40200)) {
       return {
         ok: false,
         provider: "mimo",
         kind: "auth_failed",
-        message: "MiMo API Key 已失效，请到 platform.xiaomimimo.com 重新生成",
+        message: "MiMo Cookie 已失效，请重新登录 platform.xiaomimimo.com 并复制 Cookie 请求头",
       };
     }
     return {
@@ -592,63 +609,52 @@ function parseMimoBalanceResponse(body /*, detailBody — unused, balance 端点
       message: "MiMo 业务错误 code=" + json.code + " · " + (json.message || ""),
     };
   }
-  const data = (json.data && typeof json.data === "object") ? json.data : json;
+  const data = json.data && typeof json.data === "object" ? json.data : json;
 
-  // Token Plan: token_balance + token_limit 存在 → 套餐已用 %
-  const tokBal = parseMimoNumberField(data.token_balance);
-  const tokLim = parseMimoNumberField(data.token_limit);
-  if (tokLim !== null && tokLim > 0 && tokBal !== null) {
-    const used = Math.max(0, tokLim - tokBal);
-    const pct = Math.round((used / tokLim) * 100);
+  const raw = Number(data.percent);
+  if (!isFinite(raw)) {
     return {
-      ok: true,
+      ok: false,
       provider: "mimo",
-      display: {
-        fiveHrPct: Math.max(0, Math.min(100, pct)),
-        weeklyPct: null,
-        fiveHrResetsIn: null,
-        weeklyResetsIn: null,
-        balanceText: null,
-        balanceUsd: null,
-        currency: null,
-      },
+      kind: "parse",
+      message: "MiMo 响应缺少 percent 字段（keys: " + Object.keys(data).join(",") + "）",
     };
   }
+  const remaining = Math.max(0, Math.min(100, Math.round(raw)));
+  const used = 100 - remaining;
 
-  // PAYG: balance 字段（CNY）→ 余额文本
-  const bal = parseMimoNumberField(data.balance);
-  if (bal !== null && bal > 0) {
-    return {
-      ok: true,
-      provider: "mimo",
-      currency: "CNY",
-      display: {
-        balanceText: formatBalance(bal, "CNY"),
-        balanceUsd: null,
-        fiveHrPct: null,
-        weeklyPct: null,
-        fiveHrResetsIn: null,
-        weeklyResetsIn: null,
-        currency: "CNY",
-      },
-    };
+  // resetDate 形如 "2026-09-16"（本地日），按当天 23:59:59 解释为到期时刻。
+  let resetsAt = null;
+  if (typeof data.resetDate === "string" && data.resetDate) {
+    const iso = data.resetDate.length <= 10 ? data.resetDate + "T23:59:59" : data.resetDate;
+    const t = Date.parse(iso);
+    if (!isNaN(t)) resetsAt = t;
   }
+  const resetsIn = resetsAt ? formatResetsIn(resetsAt) : null;
 
   return {
-    ok: false,
+    ok: true,
     provider: "mimo",
-    kind: "parse",
-    message: "MiMo balance 响应缺少 token_balance/token_limit 或 balance 字段",
+    display: {
+      // 剩余用量是单一窗口（账户菜单标「1 周」），映射到 7d 窗口位
+      weeklyPct: used,
+      weeklyResetsIn: resetsIn,
+      fiveHrPct: null,
+      fiveHrResetsIn: null,
+      balanceText: "剩余 " + remaining + "%",
+      balanceUsd: null,
+      currency: null,
+    },
   };
 }
 
-function parseMimoNumberField(v) {
-  if (typeof v === "number" && isFinite(v)) return v;
-  if (typeof v === "string") {
-    const n = parseFloat(v);
-    return isFinite(n) ? n : null;
-  }
-  return null;
+/** 12345678 → "12.3M"（读数行/卡片用的紧凑 token 计数）。 */
+function formatTokenCount(n) {
+  if (!isFinite(n) || n <= 0) return "0";
+  if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "K";
+  return String(Math.round(n));
 }
 
 function formatResetsIn(resetsAtMs) {
@@ -1207,7 +1213,7 @@ export class TokenStatsService extends TypertRemoteService {
   }
 
   /** curl fallback for hosts without a global fetch (same shape as musage). */
-  async _curlGet(url, key, authStyle) {
+  async _curlGet(url, key, authStyle, extraHeaders) {
     const subprocess = this.ctx.get("subprocess");
     if (!subprocess || typeof subprocess.spawn !== "function") {
       return { ok: false, kind: "network", message: "subprocess service 不可用, 且宿主无全局 fetch" };
@@ -1219,15 +1225,19 @@ export class TokenStatsService extends TypertRemoteService {
         : authStyle === "cookie"
           ? "Cookie: " + key
           : "Authorization: Bearer " + key;
+    const argv = [
+      c, "-sS",
+      "--max-time", String(Math.floor(QUOTA_REQUEST_TIMEOUT_MS / 1000)),
+      "-w", "\n%{http_code}",
+      "-H", authHeader,
+      "-H", "Accept: application/json",
+    ];
+    for (const [name, value] of Object.entries(extraHeaders || {})) {
+      argv.push("-H", name + ": " + value);
+    }
+    argv.push(url);
     const handle = subprocess.spawn({
-      argv: [
-        c, "-sS",
-        "--max-time", String(Math.floor(QUOTA_REQUEST_TIMEOUT_MS / 1000)),
-        "-w", "\n%{http_code}",
-        "-H", authHeader,
-        "-H", "Accept: application/json",
-        url,
-      ],
+      argv,
       cwd: "/",
       stdio: {
         stdin: "ignore",
@@ -1261,11 +1271,13 @@ export class TokenStatsService extends TypertRemoteService {
     return { ok: true, body };
   }
 
-  /** GET one provider endpoint with its API key; fetch first, curl fallback. */
-  async _httpGet(url, key, authStyle) {
+  /** GET one provider endpoint with its API key; fetch first, curl fallback.
+   *  `extraHeaders` carries provider-specific headers (e.g. MiMo dashboard 的
+   *  accept-language: en)，fetch 与 curl 两条路径都要带上。 */
+  async _httpGet(url, key, authStyle, extraHeaders) {
     if (typeof fetch === "function") {
       try {
-        const headers = { accept: "application/json" };
+        const headers = { accept: "application/json", ...(extraHeaders || {}) };
         // authStyle: undefined → Bearer； "raw" → 原样 Authorization（智谱）；
         // "cookie" → 整串 Cookie 头（小米 MiMo dashboard admin API）。
         if (authStyle === "cookie") headers.cookie = key;
@@ -1276,20 +1288,25 @@ export class TokenStatsService extends TypertRemoteService {
           signal: AbortSignal.timeout(QUOTA_REQUEST_TIMEOUT_MS),
         });
         const body = await res.text();
+        // 带回 Set-Cookie：mimo 的 cookie jar 靠它接住服务端续发的会话
+        // （浏览器自动存，我们此前每次重发死 cookie，等于放弃了续期）。
+        const setCookie = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
         if (res.status !== 200) {
           return {
             ok: false,
             kind: classifyQuotaHttpStatus(res.status),
             httpStatus: res.status,
+            setCookie,
             message: "HTTP " + res.status + " · " + body.slice(0, 200),
           };
         }
-        return { ok: true, body };
+        return { ok: true, body, setCookie };
       } catch (e) {
         return { ok: false, kind: "network", message: "fetch 失败: " + String((e && e.message) || e) };
       }
     }
-    return this._curlGet(url, key, authStyle);
+    // curl 回退路径不带 Set-Cookie（无法维持会话续期，仅影响 mimo 的 cookie 升级）。
+    return this._curlGet(url, key, authStyle, extraHeaders);
   }
 
   async _fetchProviderQuota(provider) {
@@ -1297,8 +1314,8 @@ export class TokenStatsService extends TypertRemoteService {
     if (!cfg) {
       return { ok: false, provider, kind: "other", message: "未知 provider: " + provider };
     }
-    const { apiKey, apiKeyRef, cookie } = await this._quotaApiKey(provider);
-    if (provider === "mimo") return this._fetchMimoQuota(apiKey, cookie);
+    const { apiKey, apiKeyRef, cookie, cookieRef } = await this._quotaApiKey(provider);
+    if (provider === "mimo") return this._fetchMimoQuota(apiKey, apiKeyRef, cookie, cookieRef);
     if (!apiKey) {
       return {
         ok: false,
@@ -1315,73 +1332,176 @@ export class TokenStatsService extends TypertRemoteService {
   }
 
   /**
-   * Xiaomi MiMo 多端点探测链 (v1.6.0 起，对齐 quotas crate mimo.rs + CodexBar)：
-   *   Bearer (API Key, 稳定优先):
-   *     1. token-plan-sgp/v1/user/balance (Token Plan token_balance/token_limit)
-   *     2. api.xiaomimimo.com/v1/user/balance (PAYG CNY balance)
-   *     3. token-plan-sgp/api/v1/tokenPlan/usage (Token Plan 套餐 % + 月度 %)
-   *     4. platform/api/v1/tokenPlan/usage (Bearer 平台端点)
-   *   Cookie (dashboard session, 兜底):
-   *     5. platform/api/v1/tokenPlan/usage (经典 dashboard 路径)
-   *     6. token-plan-sgp/api/v1/tokenPlan/usage (SGP dashboard 路径)
-   * 每个端点 HTTP 200 后用对应 parser 解析；业务 401xx → auth_failed, 进入下一
-   * 个端点；parse 失败（非凭据）→ 直接返回。usage 端点成功后再 best-effort 拉
-   * detail（同鉴权方式）补 reset 时间。balance 端点本身包含 plan 字段，不再
-   * 拉 detail。
+   * MiMo 本地用量（零凭据、零过期）：从会话日志聚合里筛出 MiMo 模型，
+   * 算「今日 / 近 7 天（含今天）」消耗 token。provider 判定与 client 的
+   * PROVIDER_ALIASES 同一套包含回退（route id 用户自由命名）。
    */
-  async _fetchMimoQuota(apiKey, cookie) {
-    if (!apiKey && !cookie) {
+  _mimoLocalUsage() {
+    const isMimo = (meta, key) => {
+      const p = String((meta && meta.provider) || "").toLowerCase();
+      if (p) return p.includes("mimo") || p.includes("xiaomi");
+      const n = String((meta && meta.name) || key || "").toLowerCase();
+      return n.includes("mimo");
+    };
+    const now = Date.now();
+    const todayKey = this._dayKeyOf(now);
+    const weekCut = this._dayKeyOf(now - 6 * DAY_MS);
+    let today = 0;
+    let week = 0;
+    for (const [dk, day] of this._byDay) {
+      if (dk > todayKey) continue;
+      let dayTotal = 0;
+      for (const [key, rec] of day) {
+        const meta = this._modelMeta.get(key);
+        if (!isMimo(meta, key)) continue;
+        dayTotal += rec.total || 0;
+      }
+      if (dk === todayKey) today = dayTotal;
+      if (dk >= weekCut) week += dayTotal;
+    }
+    return { today, week };
+  }
+
+  /**
+   * 最小 cookie jar：把响应 `Set-Cookie` 里属于 MiMo 的条目吸收进当前 cookie 串，
+   * 并写回 DSH 凭据库，使服务端续发的会话能跨轮询、跨重启生效。
+   *
+   * 只吸收两类名字：jar 里已存在的（续期/轮换同一条 cookie），以及 MiMo 已知的那几个
+   * （防止服务端塞进无关 cookie 污染用户粘贴的内容）。没有变化则不写盘。
+   *
+   * @returns {Promise<string|null>} 合并后的新 cookie 串；无变化返回 null。
+   */
+  async _absorbMimoCookie(cookieRef, current, setCookieHeaders) {
+    if (!Array.isArray(setCookieHeaders) || setCookieHeaders.length === 0) return null;
+    const jar = cookieStringToMap(current);
+    const known = new Set([...MIMO_COOKIE_REQUIRED, "api-platform_ph", "api-platform_slh"]);
+    let changed = false;
+    for (const raw of setCookieHeaders) {
+      // 只取第一段 `name=value`，后面的 Path/HttpOnly/Expires 是属性不是 cookie
+      const pair = String(raw).split(";")[0];
+      const i = pair.indexOf("=");
+      if (i <= 0) continue;
+      const name = pair.slice(0, i).trim();
+      if (!name) continue;
+      if (!jar.has(name) && !known.has(name)) continue;
+      const value = pair.slice(i + 1).trim();
+      // 浏览器语义：空值或 Max-Age=0 表示**删除**该 cookie，不是把它置空
+      // （置空会发出 `api-platform_serviceToken=`，等于带着坏 cookie 去请求）。
+      if (value === "" || /;\s*max-age\s*=\s*0/i.test(raw)) {
+        if (jar.delete(name)) changed = true;
+        continue;
+      }
+      if (jar.get(name) === value) continue;
+      jar.set(name, value);
+      changed = true;
+    }
+    if (!changed) return null;
+    const next = cookieMapToString(jar);
+    const credentials = this.ctx.get("credentials");
+    // 服务端把会话 cookie 全清掉了 = 会话没了：删掉凭据比留个空串更贴近浏览器，
+    // 下一轮会自然退回本地用量，而不是带着空 cookie 反复 401。
+    if (!next) {
+      try {
+        if (cookieRef && credentials && typeof credentials.unset === "function") {
+          await credentials.unset(cookieRef);
+        }
+      } catch {
+        /* 写回失败不影响本次读数 */
+      }
+      return null;
+    }
+    // 写回官方凭据库（宿主侧 credentials.set）；失败只影响跨重启续期，本进程内
+    // 仍用 next 继续请求，所以吞掉异常。
+    try {
+      if (cookieRef && credentials && typeof credentials.set === "function") {
+        await credentials.set(cookieRef, next);
+      }
+    } catch {
+      /* 写回失败不影响本次读数 */
+    }
+    return next;
+  }
+
+  /** MiMo 读数（v1.7.0）：官方 Cookie 优先，失败静默退回本地用量。 */
+  async _fetchMimoQuota(_apiKey, _apiKeyRef, cookie, cookieRef) {
+    if (cookie) {
+      const official = await this._fetchMimoOfficial(cookie, cookieRef);
+      if (official.ok) return official;
+      // Cookie 失效（auth_failed）→ 不打扰用户，静默退回本地用量。
+      // 其余（套餐过期 / 解析失败 / 限流 / 5xx）都是真实状态，如实上报。
+      if (official.kind !== "auth_failed") return official;
+    }
+    const local = this._mimoLocalUsage();
+    return {
+      ok: true,
+      provider: "mimo",
+      display: {
+        fiveHrPct: null,
+        weeklyPct: null,
+        fiveHrResetsIn: null,
+        weeklyResetsIn: null,
+        balanceText: "今日 " + formatTokenCount(local.today) + " · 7d " + formatTokenCount(local.week),
+        balanceUsd: null,
+        currency: null,
+      },
+    };
+  }
+
+  /**
+   * 官方 dashboard 配额（仅 Cookie）：主用桌面端同款 `/api/v1/user/usage`
+   * （percent=剩余 + resetDate），失败再退到旧版 `/api/v1/tokenPlan/usage`
+   * + `/detail`（已用比例）。两条都不通 = Cookie 失效。
+   */
+  async _fetchMimoOfficial(cookie, cookieRef) {
+    const missing = MIMO_COOKIE_REQUIRED.filter((n) => cookie.indexOf(n) < 0);
+    if (missing.length === MIMO_COOKIE_REQUIRED.length) {
       return {
         ok: false,
         provider: "mimo",
-        kind: "unconfigured",
-        message: "未配置 MiMo API Key 或 Cookie（在 DSH 模型设置里配置对应 provider）",
+        kind: "auth_failed",
+        message:
+          "MiMo Cookie 缺少 " + MIMO_COOKIE_REQUIRED.join(" / ") +
+          "：登录 platform.xiaomimimo.com 后从开发者工具复制完整 Cookie 请求头",
       };
     }
 
-    // 探测链 — Bearer 在前, Cookie 在后。`detailUrl === null` 表示该端点
-    // 不需要 detail（balance 端点本身已含 plan 信息）。
-    const chain = [];
-    if (apiKey) {
-      chain.push({ auth: "bearer", url: MIMO_TOKEN_PLAN_SGP_BALANCE_URL, parser: parseMimoBalanceResponse, detailUrl: null, tag: "balance-sgp" });
-      chain.push({ auth: "bearer", url: MIMO_PAYG_BALANCE_URL, parser: parseMimoBalanceResponse, detailUrl: null, tag: "balance-payg" });
-      chain.push({ auth: "bearer", url: MIMO_TOKEN_PLAN_SGP_USAGE_URL, parser: parseMimoResponse, detailUrl: MIMO_TOKEN_PLAN_SGP_DETAIL_URL, tag: "usage-sgp" });
-      chain.push({ auth: "bearer", url: MIMO_USAGE_URL, parser: parseMimoResponse, detailUrl: MIMO_DETAIL_URL, tag: "usage-platform" });
-    }
-    if (cookie) {
-      chain.push({ auth: "cookie", url: MIMO_USAGE_URL, parser: parseMimoResponse, detailUrl: MIMO_DETAIL_URL, tag: "usage-platform" });
-      chain.push({ auth: "cookie", url: MIMO_TOKEN_PLAN_SGP_USAGE_URL, parser: parseMimoResponse, detailUrl: MIMO_TOKEN_PLAN_SGP_DETAIL_URL, tag: "usage-sgp" });
-    }
+    // 每个响应后立刻吸收 Set-Cookie：服务端续发的会话要马上用于后续请求
+    // （browser jar 的等价行为），否则同一轮里还在用旧 token。
+    const jar = async (res) => {
+      const next = await this._absorbMimoCookie(cookieRef, cookie, res && res.setCookie);
+      if (next) cookie = next;
+      return res;
+    };
 
-    let lastError = null;
-    for (const step of chain) {
-      const cred = step.auth === "cookie" ? cookie : apiKey;
-      const raw = await this._httpGet(step.url, cred, step.auth === "cookie" ? "cookie" : undefined);
-      if (!raw.ok) {
-        lastError = { ...raw, provider: "mimo" };
-        continue;
-      }
-      // usage 端点: 先拉 detail (expired 标记 + reset 时间). detail 失败不影响
-      // usage 解析, 留空 detail 让 parser 走"无 detail"分支. balance 端点
-      // (detailUrl === null) 本身已含 plan, 不再请求 detail.
-      let detailBody = null;
-      if (step.detailUrl) {
-        const d = await this._httpGet(step.detailUrl, cred, step.auth === "cookie" ? "cookie" : undefined);
-        if (d.ok) detailBody = d.body;
-      }
-      const parsed = step.parser(raw.body, detailBody);
-      if (!parsed.ok) {
-        if (parsed.kind === "auth_failed") {
-          // 凭据失效 → 进入下一端点.
-          lastError = { ...parsed, provider: "mimo" };
-          continue;
-        }
-        // 其他失败（parse / server_error）：直接返回，不必继续探测。
-        return parsed;
-      }
-      return parsed;
+    const user = await jar(await this._httpGet(MIMO_USER_USAGE_URL, cookie, "cookie", MIMO_PLATFORM_HEADERS));
+    if (user.ok) {
+      const parsed = parseMimoUserUsage(user.body);
+      if (parsed.ok) return parsed;
+      // 业务码 401 = 会话已死，不用再试旧端点。
+      if (parsed.kind === "auth_failed") return parsed;
+    } else if (user.httpStatus === 401 || user.httpStatus === 403) {
+      return { ...user, provider: "mimo" };
+    } else if (user.kind === "rate_limited" || (user.httpStatus >= 500 && user.httpStatus < 600)) {
+      return { ...user, provider: "mimo" };
     }
-    return lastError || { ok: false, provider: "mimo", kind: "other", message: "MiMo 所有端点探测均失败" };
+    // 404（该账号没有这个端点）或其它 → 退到旧版 tokenPlan/usage + detail。
+    // detail 必须先拉（expired 标记 + 重置时间要在 usage 解析前拿到）。
+    const detail = await jar(await this._httpGet(MIMO_DETAIL_URL, cookie, "cookie", MIMO_PLATFORM_HEADERS));
+    const usage = await jar(await this._httpGet(MIMO_USAGE_URL, cookie, "cookie", MIMO_PLATFORM_HEADERS));
+    if (usage.ok) {
+      const parsed = parseMimoResponse(usage.body, detail.ok ? detail.body : null);
+      // plan_expired / schema_unknown / parse 都是"拿到了但内容不对"，如实上报；
+      // 只有 auth_failed 才继续降级。
+      if (parsed.ok || parsed.kind !== "auth_failed") return parsed;
+    }
+    return {
+      ok: false,
+      provider: "mimo",
+      kind: "auth_failed",
+      message:
+        "MiMo Cookie 已失效（" + MIMO_USER_USAGE_URL.replace("https://", "") +
+        " 返回 " + (user.httpStatus || "异常") + "）：重新登录 platform.xiaomimimo.com 后复制 Cookie",
+    };
   }
 
   /**

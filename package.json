@@ -1,7 +1,7 @@
 {
   "name": "@duke-dsh-plugins/dsh-token-stats",
-  "version": "1.6.0",
-  "description": "Token usage statistics for DeepSeek Harness (7/30-day per-model charts + yearly heatmap) plus an inline coding-plan balance/quota readout in the composer (minimax/deepseek/kimi/openrouter/zhipu).",
+  "version": "1.7.0",
+  "description": "Token usage statistics for DeepSeek Harness (7/30-day per-model charts + yearly heatmap) plus an inline coding-plan balance/quota readout in the composer (minimax/deepseek/kimi/openrouter/zhipu/mimo; mimo falls back to local usage since MiMo exposes no API-key quota API).",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/MoonlitDropOfBlood/dsh-token-stats.git"
@@ -52,6 +52,9 @@
     "smoke:robust": "node scripts/smoke-robust-host.mjs && node scripts/smoke-robust-client.mjs",
     "smoke:typert": "node scripts/smoke-typert.mjs",
     "smoke:compat": "node scripts/smoke-compat.mjs",
+    "probe:mimo": "node scripts/probe-mimo.mjs",
+    "probe:mimo:nocookie": "node scripts/probe-mimo-nocookie.mjs",
+    "probe:mimo:session": "node scripts/probe-mimo-session.mjs",
     "e2e": "npm run check && npm run smoke && npm run smoke:quota && npm run smoke:robust && npm run smoke:typert && npm run smoke:compat && node scripts/repro-client-mount.mjs && node scripts/repro-strict-dispatch.mjs && node scripts/repro-profile-boot.mjs"
   }
 }

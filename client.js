@@ -683,15 +683,17 @@ window.__ModuleLoader__.load({
         return null;
       }
       // 凭据设置行写入的 ref — 与 host QUOTA_PROVIDERS.apiKeyRefs 首选项对齐。
-      // mimo 写 XIAOMI_MIMO_API_KEY（v1.6.0 起推荐：Bearer /v1/user/balance
-      // 与路由 LLM API Key 同源，稳定不易过期；Cookie 仍可作为兜底探测）。
+      // mimo 写 XIAOMI_MIMO_COOKIE（v1.7.0 起）：MiMo 没有开放任何 API Key
+      // 配额接口（token-plan-* 主机只有 /v1 推理 API，实测见 scripts/probe-mimo.mjs），
+      // 只有 dashboard 账号会话 Cookie 能拿到官方「剩余用量 %」。不填也不影响
+      // —— host 会退回本地用量统计。
       const QUOTA_CRED_REFS = {
         minimax: "MINIMAX_CN_API_KEY",
         deepseek: "DEEPSEEK_API_KEY",
         kimi: "KIMI_CODING_API_KEY",
         openrouter: "OPENROUTER_API_KEY",
         zhipu: "ZAI_CODING_CN_API_KEY",
-        mimo: "XIAOMI_MIMO_API_KEY",
+        mimo: "XIAOMI_MIMO_COOKIE",
       };
       const QUOTA_PROVIDER_ORDER = ["minimax", "deepseek", "kimi", "openrouter", "zhipu", "mimo"];
 
@@ -723,10 +725,12 @@ window.__ModuleLoader__.load({
           return [labelEl, React.createElement("span", { key: "b", style: strong }, txt)];
         }
         if (provider === "mimo") {
-          // MiMo：PAYG 显示 CNY 余额，Token Plan 显示 套餐% + 本月%。
+          // MiMo：官方读数显示「剩余 X%」（balanceText），本地用量显示
+          // 「今日 X · 7d Y」——行内位置窄，只取前半段，完整内容在悬停面板。
           const parts = [labelEl];
           if (typeof d.balanceText === "string" && d.balanceText) {
-            parts.push(React.createElement("span", { key: "bal", style: strong }, d.balanceText));
+            const compact = d.balanceText.split(" · ")[0];
+            parts.push(React.createElement("span", { key: "bal", style: strong }, compact));
             return parts;
           }
           if (typeof d.fiveHrPct === "number") {
@@ -757,20 +761,24 @@ window.__ModuleLoader__.load({
         if (props.ok && props.display) {
           const d = props.display;
           if (typeof d.balanceText === "string" && d.balanceText) {
+            // mimo 的 balanceText 可能是「本地用量」也可能是官方「剩余 X%」。
+            const cap =
+              props.provider === "mimo"
+                ? (typeof d.weeklyPct === "number" ? "官方剩余用量" : "本地用量（近 7 天 / 今日）")
+                : "账户余额" + (d.currency ? " (" + d.currency + ")" : "");
             rows.push(
               React.createElement(
                 "div", { key: "bal", className: "ts-quota-pop-row" },
-                React.createElement("span", null, "账户余额" + (d.currency ? " (" + d.currency + ")" : "")),
+                React.createElement("span", null, cap),
                 React.createElement("b", null, d.balanceText),
               ),
             );
           }
+          // mimo 官方读数只有一个 Token Plan 窗口（/api/v1/user/usage 的
+          // percent 是「剩余」，host 已换算成已用 %）；本地用量模式没有窗口。
           const windows =
             props.provider === "mimo"
-              ? [
-                  ["套餐已用", d.fiveHrPct, d.fiveHrResetsIn],
-                  ["本月总额度", d.weeklyPct, d.weeklyResetsIn],
-                ]
+              ? [["Token Plan", d.weeklyPct, d.weeklyResetsIn]]
               : [
                   ["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn],
                   ["7d 窗口", d.weeklyPct, d.weeklyResetsIn],
@@ -970,12 +978,17 @@ window.__ModuleLoader__.load({
         }
         const d = v.display || {};
         if (typeof d.balanceText === "string" && d.balanceText) {
+          // mimo 复用 balanceText 承载两种读数：本地用量（无窗口百分比）或
+          // 官方「剩余 X%」（有 weeklyPct），所以标题不能写死「账户余额」。
+          const head = p === "mimo"
+            ? (typeof d.weeklyPct === "number" ? "Token Plan" : "本地用量")
+            : "账户余额" + (d.currency ? " · " + d.currency : "");
           return React.createElement(
             "div", { className: "ts-card ts-quota-card" },
             React.createElement(
               "div", { className: "ts-quota-card-head" },
               React.createElement("span", { className: "ts-quota-card-name" }, label),
-              React.createElement("span", { className: "ts-quota-card-status" }, "账户余额" + (d.currency ? " · " + d.currency : "")),
+              React.createElement("span", { className: "ts-quota-card-status" }, head),
             ),
             React.createElement("div", { className: "ts-quota-card-value" }, d.balanceText),
           );
@@ -1069,7 +1082,14 @@ window.__ModuleLoader__.load({
         const needsCred = names.filter(
           (p) => quotas[p] && quotas[p].ok === false && (quotas[p].kind === "unconfigured" || quotas[p].kind === "auth_failed"),
         );
-        if (configured.length === 0 && needsCred.length === 0) return null;
+        // mimo 零凭据可用（本地用量），所以不会落进 needsCred；这里在它还处于
+        // 本地模式时补一个**可选**的 Cookie 入口——粘了就能升级成官方剩余用量 %。
+        const mimo = quotas.mimo;
+        const mimoLocalMode =
+          !!(mimo && mimo.ok === true) &&
+          typeof mimo.display === "object" &&
+          typeof mimo.display.weeklyPct !== "number";
+        if (configured.length === 0 && needsCred.length === 0 && !mimoLocalMode) return null;
         return React.createElement(
           "div", { className: "ts-block" },
           React.createElement(
@@ -1100,7 +1120,6 @@ window.__ModuleLoader__.load({
                 "div", { className: "ts-cred-block" },
                 React.createElement("div", { className: "ts-block-title" }, "凭据设置（粘贴后保存，自动重新拉取）"),
                 needsCred.map((p) => {
-                  const isAuthFailed = quotas[p] && quotas[p].kind === "auth_failed";
                   return React.createElement(
                     "div", { key: p, className: "ts-cred-row" },
                     React.createElement("span", { className: "ts-cred-label" }, quotaProviderLabel(p)),
@@ -1108,9 +1127,7 @@ window.__ModuleLoader__.load({
                       type: "password",
                       className: "ts-cred-input",
                       placeholder: p === "mimo"
-                        ? (isAuthFailed
-                            ? "凭据失效：粘贴新的 API Key（推荐）或 Cookie"
-                            : "推荐粘贴 API Key (tp-...)，与 LLM 路由同源不易过期；Cookie 也能用")
+                        ? "粘贴 platform.xiaomimimo.com 的 Cookie 请求头（含 api-platform_serviceToken 与 userId）"
                         : "粘贴 API Key",
                       value: credDrafts[p] || "",
                       onChange: (e) => setCredDrafts((d) => ({ ...d, [p]: e.target.value })),
@@ -1129,6 +1146,38 @@ window.__ModuleLoader__.load({
                     credMsgs[p] ? React.createElement("span", { className: "ts-cred-msg" }, credMsgs[p]) : null,
                   );
                 }),
+              )
+            : null,
+          // mimo 专用：可选的 dashboard Cookie —— 粘了把本地用量升级成官方
+          // 「剩余用量 % + 周重置」；不粘也能正常显示本地用量统计。
+          mimoLocalMode
+            ? React.createElement(
+                "div", { className: "ts-cred-block" },
+                React.createElement("div", { className: "ts-block-title" }, "MiMo 官方剩余用量（可选）"),
+                React.createElement(
+                  "div", { className: "ts-cred-row" },
+                  React.createElement("span", { className: "ts-cred-label" }, "Cookie"),
+                  React.createElement("input", {
+                    type: "password",
+                    className: "ts-cred-input",
+                    placeholder:
+                      "MiMo 未开放 API Key 配额接口；登录 platform.xiaomimimo.com 后从开发者工具复制完整 Cookie 请求头（含 api-platform_serviceToken 与 userId），可显示官方剩余 %（会过期，失效后自动退回本地用量）",
+                    value: credDrafts.mimo || "",
+                    onChange: (e) => setCredDrafts((d) => ({ ...d, mimo: e.target.value })),
+                    onKeyDown: (e) => {
+                      if (e.key === "Enter") saveCred("mimo", credDrafts.mimo || "");
+                    },
+                  }),
+                  React.createElement(
+                    "button", {
+                      className: "ts-cred-save",
+                      disabled: !!credSaving.mimo || !(credDrafts.mimo && credDrafts.mimo.trim()),
+                      onClick: () => saveCred("mimo", credDrafts.mimo || ""),
+                    },
+                    credSaving.mimo ? "保存中…" : "保存",
+                  ),
+                  credMsgs.mimo ? React.createElement("span", { className: "ts-cred-msg" }, credMsgs.mimo) : null,
+                ),
               )
             : null,
         );

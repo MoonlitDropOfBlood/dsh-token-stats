@@ -61,11 +61,13 @@ dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-sta
 4. **会话输入框工具行**（model 选择器左侧）内联显示当前 provider 的套餐余额：
    - DeepSeek / OpenRouter 显示余额（如 `¥43.97` / `$12.50`）；
    - MiniMax / Kimi / 智谱 显示 `5h X% | 7d Y%`（5 小时 / 7 天窗口已用百分比，悬停查看重置时间）；
-   - 小米 MiMo 显示 `套餐 X% | 本月 Y%`（Token Plan 已用百分比，悬停查看重置时间；需在凭据里配 platform.xiaomimimo.com 的登录 Cookie，见下）；
+   - 小米 MiMo 默认显示 `今日 X · 7d Y`（**本地用量统计，零凭据、永不过期**）；若在「套餐余额」里填了 dashboard 登录 Cookie，则升级为官方 `剩余 X%` + 周重置倒计时（见下）；
    - 切换模型时自动切换 provider；每 60s 自动刷新，**点击读数立即强制刷新**；
    - 未配置对应 API Key 或拉取失败时显示 `⚠`（悬停查看原因）；当前 provider 不在支持列表时不占位。
 
-> **MiMo（小米）配置**：MiMo 的用量走 dashboard admin API（非公开 endpoint），纯 API Key（Bearer）实测会被 401 拒绝，可靠凭证是浏览器登录 Cookie。打开 platform.xiaomimimo.com → 订阅管理，F12 → Network 任一 `/api/v1/tokenPlan/*` 请求 → 复制完整 `Cookie` 请求头值，粘到 DSH 凭据的 `XIAOMI_MIMO_COOKIE`（或把 API Key 配到 `XIAOMI_MIMO_API_KEY`，插件会先 Bearer 后 Cookie 自动重试）。按 route 派生命名的凭据（设置页自动生成，如 `XIAOMI_TOKEN_PLAN_CN_API_KEY`）同样识别；composer 读数按 route id 匹配（`xiaomi-mimo` / `xiaomimimo` / `xiaomi-token-plan-cn` / 名字含 xiaomi 或 mimo 均可）。**v1.5.4 起也可以直接在「设置 → Token 统计 → 套餐余额 → 凭据设置」里粘贴保存**，无需手改凭据库（mimo 写入 `XIAOMI_MIMO_COOKIE`，不影响 LLM 路由的 API Key）。
+> **MiMo（小米）配置**：**默认零配置**——读数来自本插件自己的会话日志聚合（今日 / 近 7 天消耗 token 数），不发任何 MiMo 请求、不会过期。缺点是拿不到套餐百分比（官方没开放任何 API Key 配额接口：`token-plan-*` 与 `api.` 主机只有 OpenAI 兼容的 `/v1` 推理 API，实测所有 Bearer 配额路径均 404；key 还与区域强绑定，CN key 在 SGP/AMS 主机一律 401）。
+>
+> 想要**官方剩余用量百分比**，唯一路径是 dashboard 账号会话：打开 platform.xiaomimimo.com 登录后，F12 → Network 任一 `/api/v1/*` 请求 → 复制完整 `Cookie` 请求头（含 `api-platform_serviceToken` 与 `userId`）→ 粘到「设置 → Token 统计 → 套餐余额 → **MiMo 官方剩余用量（可选）**」保存（写入 `XIAOMI_MIMO_COOKIE`）。插件内置最小 cookie jar：服务端若在响应里 `Set-Cookie` 续发会话会被自动吸收并写回凭据库（跨轮询、跨重启生效）；**Cookie 彻底失效时自动静默退回本地用量，不会报错**。composer 读数按 route id 匹配（`xiaomi-mimo` / `xiaomimimo` / `xiaomi-token-plan-cn` / 名字含 xiaomi 或 mimo 均可）。
 
 ## 工作原理
 
@@ -88,7 +90,7 @@ TokenStatsService.getQuota()   ← ctx.remote.tokenStats.getQuota(provider, forc
 - 数据按**本地日历天** × **模型**（`provider::model`）聚合；`total = input + output + cacheRead + cacheWrite`。
 - 历史回填只统计插件启动前发生的调用，实时监听只统计启动后的，两者通过每个会话的事件序号水位线合并，不会重复。
 - 模型/模型来自 `assistant/message` 的 `message.source`（kind = 'model'），无需自行解析请求头。
-- 套餐余额：Host 半经 `credentials` 服务解析用户在模型设置里已配置的 API Key（引用命名遵循 `<ROUTE>_API_KEY` 约定），GET provider 官方端点（宿主全局 fetch 优先，无 fetch 时回退 `subprocess` curl）；30s 缓存 + 失败指数退避（5s→30min），不落盘。
+- 套餐余额：Host 半经 `credentials` 服务解析用户在模型设置里已配置的 API Key（引用命名遵循 `<ROUTE>_API_KEY` 约定），GET provider 官方端点（宿主全局 fetch 优先，无 fetch 时回退 `subprocess` curl）；30s 缓存 + 失败指数退避（5s→30min），不落盘。**小米 MiMo 是例外**：它没有 API Key 配额接口，默认用本地会话日志聚合出用量，填了 dashboard Cookie 才升级为官方剩余用量 %。
 
 ## 目录结构
 

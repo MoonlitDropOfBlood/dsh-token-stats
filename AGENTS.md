@@ -32,6 +32,9 @@ dsh-token-stats/
 ├── scripts/repro-strict-dispatch.mjs # 用部署侧真 TypertRegistry+Gateway 跑 invokeRpc（0.2.0 strict dispatch 回归）
 ├── scripts/repro-all-manifests.mjs  # 全组合 typert manifest 注册冲突排查（手动诊断用）
 ├── scripts/repro-profile-boot.mjs   # 启动预演：真实 loadProfileDirectory+composeEntries 跑本机 profile，断言本 bundle 不被静默跳过
+├── scripts/probe-mimo.mjs           # MiMo 端点探针：按凭据 ref 扫各区域主机的候选配额路径（不打印 key）
+├── scripts/probe-mimo-nocookie.mjs  # MiMo 免 Cookie 探针：5 种鉴权形态 + key 换 token 的 POST 探测（不打印 key）
+├── scripts/probe-mimo-session.mjs   # MiMo 会话机制探针：401 是否带 Set-Cookie + 扒 SPA bundle 找账户 API 面
 ├── AGENTS.md             # 本文件
 ├── README.md
 └── LICENSE               # MIT
@@ -135,26 +138,23 @@ window.__ModuleLoader__.load({
 
 `tokenStats.getQuota(provider, force)` 给 composer 工具行的内联读数供数；`tokenStats.getAllQuotas(force)` 并行拉全部 6 个 provider（设置页「套餐余额」区块用，返回 `{ quotas: Record<provider, QuotaValue> }`）：
 
-- **凭据**：`ctx.get("credentials").resolve(ref)`；ref 候选遵循设置页派生规则 `<ROUTE>_API_KEY`（`provider.toUpperCase().replace(/[^A-Z0-9]+/g,"_")+"_API_KEY"`，见 `dsh-client-ui-settings-models` 的 `deriveKeyRef`）+ 各 provider 的内置默认 `apiKeyEnv`（deepseek-official 路由实际用 `DEEPSEEK_API_KEY`，见 `dsh-base/cordis.patch.yml`）。无 credentials 服务时回退 `process.env[ref]`。**不要**自己存 keys。
-- **v1.6.0 起 `_quotaApiKey(provider)` 同时解析 API Key 与 Cookie**（仅 mimo 用 Cookie），返回 `{ apiKey, apiKeyRef, cookie, cookieRef }`。`_quotaActiveRef[provider + ":api" | ":cookie"]` 按 provider+kind 缓存上次命中的 ref，保持粘性但两路互不锁定 — Cookie 失效时不锁住 API Key 路径。其他 provider 走单 API Key 路径（`apiKeyRefs` 字段未声明时回退旧 `refs` 数组）。
-- **HTTP**：宿主全局 `fetch` 优先（Electron/Node 18+ 必有），`AbortSignal.timeout(15s)`；`typeof fetch !== "function"` 时回退 `ctx.get("subprocess")` spawn curl（musage 的形态）。zhipu 的 `Authorization` **不加** `Bearer ` 前缀（`authStyle: "raw"`）。
-- **mimo（小米 MiMo Token Plan，v1.6.0 起多端点探测链）**：对齐 [quotas crate mimo.rs](https://docs.rs/quotas/latest/src/quotas/providers/mimo.rs.html) 与 [CodexBar docs/mimo.md](https://github.com/steipete/CodexBar/blob/main/docs/mimo.md)。用户给 LLM 路由配的 `tp-...` API Key 本身就能 Bearer 鉴权 `/v1/user/balance` 或 `/api/v1/tokenPlan/usage`，**远比 dashboard Cookie 稳定**。探测链（Bearer 优先，Cookie 兜底）：
-  1. `Bearer` `token-plan-sgp.xiaomimimo.com/v1/user/balance` — Token Plan token_balance/token_limit
-  2. `Bearer` `api.xiaomimimo.com/v1/user/balance` — PAYG CNY balance
-  3. `Bearer` `token-plan-sgp.xiaomimimo.com/api/v1/tokenPlan/usage` — Token Plan 套餐% + 月度%
-  4. `Bearer` `platform.xiaomimimo.com/api/v1/tokenPlan/usage` — Bearer 平台端点
-  5. `Cookie` `platform.xiaomimimo.com/api/v1/tokenPlan/usage` — dashboard session 兜底
-  6. `Cookie` `token-plan-sgp.xiaomimimo.com/api/v1/tokenPlan/usage` — SGP dashboard 兜底
+- **凭据**：`ctx.get("credentials").resolve(ref)`；ref 候选遵循设置页派生规则 `<ROUTE>_API_KEY`（`provider.toUpperCase().replace(/[^A-Z0-9]+/g,"_")+"_API_KEY"`，见 `dsh-client-ui-settings-models` 的 `deriveKeyRef`）+ 各 provider 的内置默认 `apiKeyEnv`（deepseek-official 路由实际用 `DEEPSEEK_API_KEY`，见 `dsh-base/cordis.patch.yml`）。无 credentials 服务时回退 `process.env[ref]`。**不要**自己存 keys。`_quotaApiKey(provider)` 返回 `{ apiKey, apiKeyRef, cookie, cookieRef }`；`_quotaActiveRef[provider + ":api" | ":cookie"]` 缓存上次命中的 ref 保持粘性。**v1.6.0 引入的 mimo `apiKeyRefs` 双通道已在 v1.7.0 移除**——其余 5 个 provider 是单 `refs` 数组，mimo 只剩 `cookieRefs`。
+- **HTTP**：宿主全局 `fetch` 优先（Electron/Node 18+ 必有），`AbortSignal.timeout(15s)`；`typeof fetch !== "function"` 时回退 `ctx.get("subprocess")` spawn curl（musage 的形态）。zhipu 的 `Authorization` **不加** `Bearer ` 前缀（`authStyle: "raw"`）。`_httpGet/_curlGet(url, cred, authStyle, extraHeaders)` 的第 4 参是 provider 专属请求头（仅 mimo dashboard 用 `accept-language: en`），fetch 与 curl 两条路径都要带上。
+- **mimo（小米 MiMo Token Plan，v1.7.0 起重写为「本地用量 + Cookie 升级」）**：⚠️ **MiMo 没有开放任何 API Key 配额接口**，v1.6.0 的 Bearer 探测链是错的（详见下方「MiMo 401 事故」）。现在的形态：
+  1. **默认（零凭据）：本地用量**。`_mimoLocalUsage()` 从会话日志聚合 `_byDay` 里筛出 MiMo 模型（provider 含 `xiaomi`/`mimo`，或 provider 为空时模型名含 `mimo`；与 client `PROVIDER_ALIASES` 同一套包含回退），算「今日 / 近 7 天（含今天）」消耗 token，`formatTokenCount` 压成 `今日 3.2M · 7d 9.2M` 放进 `balanceText`。**不发任何网络请求、不会过期**，也因此 mimo 永远 `ok:true`，不会落进 client 的 `needsCred` 凭据提示。
+  2. **配了 Cookie 就升级为官方读数**：`_fetchMimoOfficial(cookie)` 打 `platform.xiaomimimo.com/api/v1/user/usage`（带 `accept-language: en`），这是 **MiMo 桌面端 IPC `mimo:getUserUsage` 的同一条链路**，返回 `{ percent, resetDate }`——**`percent` 是「剩余」百分比**（账户菜单「剩余用量 78%」），所以 `weeklyPct = 100 - percent`，`balanceText = "剩余 78%"`。⚠️ 语义别搞反：旧 `/api/v1/tokenPlan/usage` 的 `items[].percent` 是**已用**比例。
+  3. 端点 404/不可用时退到旧版 `/api/v1/tokenPlan/detail` + `/api/v1/tokenPlan/usage`（已用比例 + `currentPeriodEnd` 重置；`expired:true` → `plan_expired`；**detail 必须先 fetch**）。业务 `code:401`、HTTP 401/403、缺必需 Cookie 名 → `auth_failed`。
+  4. **`auth_failed` 静默降级回本地用量**（不向用户报错，Cookie 过期不该变成刺眼的错误卡）；`plan_expired` / `parse` / `rate_limited` / 5xx 如实上报。Cookie 必含 `api-platform_serviceToken` + `userId`（CodexBar docs/mimo.md）。
+  5. **最小 cookie jar（`_absorbMimoCookie`）**：每个 dashboard 响应后把 `Set-Cookie` 里属于 MiMo 的条目（`_httpGet` 用 `res.headers.getSetCookie()` 回传，curl 回退路径拿不到）吸收进 cookie 串，**并用宿主 `ctx.get("credentials").set(cookieRef, next)` 写回官方凭据库**——这样服务端续发的会话能跨轮询、跨重启生效，语义等价于浏览器 cookie jar。**服务端大多数响应根本不下发 `Set-Cookie`**（不依赖它：空/缺 `setCookie` 时原样返回 null，cookie 不动、读数照常、凭据库零写盘），所以下面几条边界都要守住：
+     - 只吸收 jar 里已存在的 cookie 名 + 已知四个（`api-platform_serviceToken`/`userId`/`api-platform_ph`/`api-platform_slh`），服务端塞别的 cookie 不污染用户粘贴的内容。
+     - **删除语义**：空值或 `Max-Age=0` 表示删除该 cookie（浏览器行为），不能置空——置空会发出 `api-platform_serviceToken=`，等于带着坏 cookie 去请求。
+     - 全部会话 cookie 被清空 → `credentials.unset(cookieRef)` 删掉凭据，而不是写一个空串（下一轮自然退回本地用量，而不是带着空 cookie 反复 401）。
+     - 值没变不写盘；解析只取第一段 `name=value`，`Path/HttpOnly/Max-Age` 是属性。
+     - 吸收后**同一轮内后续请求立刻用新 token**（`jar()` 包装器在每次请求后重绑 `cookie` 变量）。
+     - 对应冒烟用例：`mimo J/K`（轮换）、`L`（不下发）、`M`（删除）、`N`（全清空）。⚠️ 这只是"服务端在响应里续发"这一层；**MiMo 没有任何 refresh 接口**（平台 API 只有 `genLoginUrl`/`logout`/`admin/embed`，见 `/static/main.*.chunk.js`），会话彻底失效后只能靠 `/sts?sign=…` 的 SSO 重签，而那条链需要 `account.xiaomi.com` 的账号会话——无状态 HTTP 客户端拿不到，401 响应实测也不带 `Set-Cookie`。
 
-  每个端点 HTTP 200 后用对应 parser；业务 401xx → 进入下一端点；parse 失败（非凭据）→ 直接返回。usage 端点成功先拉 detail（同鉴权）补 reset 时间，`expired:true` → `plan_expired` 错误引导续费（**detail 必须在 usage parse 之前 fetch**，否则空 items 会先短路返回 parse 错误掩盖过期标记）。
-
-  凭据 ref 候选（v1.6.0 起 API Key / Cookie 分两组）：`apiKeyRefs: [XIAOMI_MIMO_API_KEY, XIAOMI_TOKEN_PLAN_CN_API_KEY, MIMO_API_KEY]` + `cookieRefs: [XIAOMI_MIMO_COOKIE, XIAOMI_TOKEN_PLAN_CN_COOKIE, MIMO_COOKIE]`。route 派生名（`XIAOMI_TOKEN_PLAN_CN_*`）与其他 provider 的 `MINIMAX_CN_*` 同规则；route id 用户自由命名，client 侧 `PROVIDER_ALIASES` 收 `xiaomi-mimo / xiaomimimo / xiaomi-token-plan-cn / mimo`，另对含 `xiaomi`/`mimo` 的 route 做包含回退。「凭据设置」UI **默认写入 `XIAOMI_MIMO_API_KEY`**（v1.6.0 起推荐：与 LLM 路由同源不易过期，Cookie 仍可作为兜底探测）；placeholder 提示「推荐粘贴 API Key（tp-...），与 LLM 路由同源不易过期；Cookie 也能用」。已有 Cookie 的旧用户不受影响（探测链自动 Cookie 兜底）。
-
-  解析：两条响应 shape —
-  - `/api/v1/tokenPlan/usage`：`{ code:0, data: { usage:{items:[{name,percent,used,limit}]}, monthUsage:{items:[{name,percent,used,limit}]} } }`，`code:0` 成功（业务 40100–40199 → auth_failed），percent 0–1 小数（×100），缺 percent 回退 `used/limit`，套餐与月度总额度相差 <0.5pt 去重；detail 给 `currentPeriodEnd`（UTC 字符串）→ 重置倒计时、`expired:true` → `plan_expired`。
-  - `/v1/user/balance`：`{ data: { token_balance, token_limit, plan_name, balance, charge_balance, granted_balance } }`，Token Plan 用 token_balance/token_limit 算套餐已用%；PAYG 用 balance 字段（CNY，字符串或数字，`formatBalance(12.5, "CNY")` → `"¥12.50"`）。
-
-  client 显示：Token Plan `套餐 X% | 本月 Y%`（复用 fiveHrPct/weeklyPct 字段）；PAYG `MiMo ¥12.50`（balanceText 占位，composer 工具行 + 设置页余额卡片都支持）。
+  凭据 ref 只剩 `cookieRefs: [XIAOMI_MIMO_COOKIE, XIAOMI_TOKEN_PLAN_CN_COOKIE, MIMO_COOKIE]`（**不再有 `apiKeyRefs`**，填 API Key 对配额毫无作用）。设置页为 mimo 单独渲染一个**可选**的「MiMo 官方剩余用量」Cookie 输入行（`mimoLocalMode` 时才出现：即没有 `weeklyPct` 数字时），保存后写 `XIAOMI_MIMO_COOKIE`。
+- **MiMo 401 事故（v1.6.0，勿回退）**：症状是 composer 读数长期显示 401。根因**不是** key 失效——用户的 `tp-…` key 在 `token-plan-cn.xiaomimimo.com/v1/models` 返回 200 完全有效；v1.6.0 把 Bearer 探测链打到了 `platform.xiaomimimo.com/api/v1/tokenPlan/usage`（只认小米账号会话的 dashboard 接口），而 token-plan 主机上那些路径全是 404、dashboard 上一律 401，于是链子走完只剩最后一个 401。实测结论：token-plan-{cn,sgp,ams} 与 api. 主机**只有 OpenAI 兼容 `/v1` 推理 API**；**key 与区域强绑定**（CN key 在 sgp/ams/api 一律 401 `invalid_key`）；`api-platform`/`account`/`open.xiaomimimo.com` 域名不解析；没有 key→token 交换接口。复现/复查用 `npm run probe:mimo`（按 ref 扫各主机候选路径）与 `npm run probe:mimo:nocookie`（5 种免 Cookie 鉴权形态 + key 换 token 的 POST 探测），两者都只打真实凭据、**不打印 key**。
 - **缓存**：每 provider 成功 30s TTL；失败指数退避 5s→30min（`streak` 递增）；`force=true` 先清缓存再拉（客户端点击读数时传）。
 - **wire 形状**：`{ ok:true, value }` 信封内 `value` 是判别联合——成功 `{ ok:true, provider, display:{fiveHrPct,weeklyPct,fiveHrResetsIn,weeklyResetsIn,balanceText,balanceUsd,currency} }`（7 个字段恒在，缺省为 null），失败 `{ ok:false, provider, kind, message }`。typert.host.js 的 zod schema 与此**逐字段对应**，改返回值必须同步改 schema（网关 strict 校验）。
 - **不落盘**：quota 状态纯内存（`_quotaCache`/`_quotaActiveRef`），与 stats store 完全无关，STORE_VERSION 不需要动。
@@ -167,7 +167,8 @@ window.__ModuleLoader__.load({
 - 注册用 **`ctx.inject(["slots", "modelDirectories"], scope => scope.slots.inject(...))`** 包裹：该服务由 `dsh-client-ui-model-selection` 提供，缺它的部署里读数不注册、其余功能不受影响。**不要**写进 `exports.inject` 硬依赖（会拖住整个 client 插件）；scope 里用到的每个服务（含 `slots`）都要写进这个 inject 列表（对照 `dsh-client-ui-model-selection` 的写法）。
 - 60s `setInterval` 轮询 + 点击 `loadRef.current(true)` 强制刷新；provider 切换即重取。
 - **悬停面板是自绘的**（`.ts-quota` 容器 `position:relative` + `.ts-quota-pop` 绝对定位卡片，DSW 设计 token + 进度条），**不要退回原生 `title`**（用户嫌丑）。
-- 设置页余额区块 `QuotaSection` 走 `getAllQuotas`：卡片 = 非 `unconfigured` 的 provider；**未配置或 `auth_failed` 的 provider 显示「凭据设置」行**（password 输入 + 保存 → 官方 `remote.credentials.set(QUOTA_CRED_REFS[p], value)`（settings-models 同款用法；`"remote.credentials"` 已在 exports.inject 声明）→ `load(true)` 强制重拉；mimo v1.6.0 起默认写 `XIAOMI_MIMO_API_KEY` — 与 LLM 路由同源不易过期）；全部六种都为 `other` 类错误时整块仍渲染错误卡片。
+- 设置页余额区块 `QuotaSection` 走 `getAllQuotas`：卡片 = 非 `unconfigured` 的 provider；**未配置或 `auth_failed` 的 provider 显示「凭据设置」行**（password 输入 + 保存 → 官方 `remote.credentials.set(QUOTA_CRED_REFS[p], value)`（settings-models 同款用法；`"remote.credentials"` 已在 exports.inject 声明）→ `load(true)` 强制重拉）。**mimo 是例外**：它永远 `ok:true`（本地用量），所以不会进 `needsCred`，改为在卡片下方单独渲染一个**可选**的「MiMo 官方剩余用量」Cookie 输入行（`mimoLocalMode` = `display.weeklyPct` 不是数字时才出现），存 `XIAOMI_MIMO_COOKIE`；升级成功后该行自动消失。全部六种都为 `other` 类错误时整块仍渲染错误卡片。
+- **mimo 的显示文本复用 `balanceText`**（官方读数时是 `"剩余 78%"`，本地用量时是 `"今日 3.2M · 7d 9.2M"`），所以 client 侧按 `display.weeklyPct` 是否为数字区分标题（`Token Plan` / `本地用量`）与悬停面板说明；composer 行内位置窄，mimo 分支只取 ` · ` 前半段，完整内容在悬停面板。
 - 本地没有 node_modules 时，把 DSH 部署的 `@deepseek-ai`/`zod` junction 进 `node_modules/` 即可跑 smoke 脚本（已 gitignore；`smoke:typert` 也吃这套 junction，或用 `DSH_NODE_MODULES` 指向部署 node_modules）。
 
 ## 开发 / 验证
