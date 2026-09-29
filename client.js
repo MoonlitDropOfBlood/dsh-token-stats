@@ -72,7 +72,7 @@ window.__ModuleLoader__.load({
 .ts-legend-val{color:var(--dsw-alias-label-secondary);white-space:nowrap}
 .ts-heat{stroke:var(--dsw-alias-border-l1);stroke-width:0.5}
 .ts-quota{position:relative;display:inline-flex}
-.ts-quota-pop{position:absolute;bottom:calc(100% + 8px);right:0;width:230px;box-sizing:border-box;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;box-shadow:var(--dsw-elevation-soft,0 6px 24px rgba(0,0,0,0.18));padding:10px 12px;display:flex;flex-direction:column;gap:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);z-index:60;pointer-events:none;animation:ts-pop-in .12s ease-out}
+.ts-quota-pop{position:absolute;bottom:calc(100% + 8px);right:0;min-width:230px;max-width:340px;width:max-content;box-sizing:border-box;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;box-shadow:var(--dsw-elevation-soft,0 6px 24px rgba(0,0,0,0.18));padding:10px 12px;display:flex;flex-direction:column;gap:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);z-index:60;pointer-events:none;animation:ts-pop-in .12s ease-out}
 .ts-quota-pop-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-weight:600;font-size:12px}
 .ts-quota-pop-sub{color:var(--dsw-alias-label-secondary);font-size:11px}
 .ts-quota-pop-row{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--dsw-alias-label-secondary)}
@@ -754,6 +754,15 @@ window.__ModuleLoader__.load({
         ];
       }
 
+      /** 悬浮窗标题行（QuotaHoverCard 与加载态共用）。 */
+      function quotaPopHead(label) {
+        return React.createElement(
+          "div", { className: "ts-quota-pop-head" },
+          React.createElement("span", null, label),
+          React.createElement("span", { className: "ts-quota-pop-sub" }, "套餐余额"),
+        );
+      }
+
       /** 自定义悬停面板 (替代原生 title): 结构化展示余额/窗口用量 + 进度条. */
       function QuotaHoverCard(props) {
         const label = quotaProviderLabel(props.provider);
@@ -761,10 +770,12 @@ window.__ModuleLoader__.load({
         if (props.ok && props.display) {
           const d = props.display;
           if (typeof d.balanceText === "string" && d.balanceText) {
-            // mimo 的 balanceText 可能是「本地用量」也可能是官方「剩余 X%」。
+            // mimo 的 balanceText 可能是「本地用量」（今日/7d 自带说明）也可能是官方「剩余 X%」。
             const cap =
               props.provider === "mimo"
-                ? (typeof d.weeklyPct === "number" ? "官方剩余用量" : "本地用量（近 7 天 / 今日）")
+                ? (typeof d.weeklyPct === "number" || typeof d.fiveHrPct === "number"
+                  ? "官方剩余用量"
+                  : "本地用量")
                 : "账户余额" + (d.currency ? " (" + d.currency + ")" : "");
             rows.push(
               React.createElement(
@@ -774,15 +785,29 @@ window.__ModuleLoader__.load({
               ),
             );
           }
-          // mimo 官方读数只有一个 Token Plan 窗口（/api/v1/user/usage 的
-          // percent 是「剩余」，host 已换算成已用 %）；本地用量模式没有窗口。
-          const windows =
-            props.provider === "mimo"
-              ? [["Token Plan", d.weeklyPct, d.weeklyResetsIn]]
-              : [
-                  ["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn],
-                  ["7d 窗口", d.weeklyPct, d.weeklyResetsIn],
-                ];
+          // mimo 窗口行：新端点 /api/v1/user/usage（percent=剩余，host 换算成已用%）
+          // 把单一窗口放在 weeklyPct；旧端点 tokenPlan/usage 回退路径把套餐已用放在
+          // fiveHrPct（套餐与月度同额度时 weeklyPct 被去重为 null）。两个都认，缺一
+          // 不跳过——v1.7.0 只读 weeklyPct，导致旧端点形状下悬浮窗只剩标题（无进度条
+          // 无重置时间，设置页却有）。两者都在且数值不同时显示两行（套餐 + 本月）。
+          let windows;
+          if (props.provider === "mimo") {
+            windows = [];
+            if (typeof d.fiveHrPct === "number") {
+              windows.push(["Token Plan", d.fiveHrPct, d.fiveHrResetsIn]);
+            }
+            if (typeof d.weeklyPct === "number") {
+              const dup = windows.length > 0 && Math.abs(d.weeklyPct - d.fiveHrPct) < 0.5;
+              if (!dup) {
+                windows.push([windows.length > 0 ? "本月" : "Token Plan", d.weeklyPct, d.weeklyResetsIn]);
+              }
+            }
+          } else {
+            windows = [
+              ["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn],
+              ["7d 窗口", d.weeklyPct, d.weeklyResetsIn],
+            ];
+          }
           for (const w of windows) {
             if (typeof w[1] !== "number") continue;
             rows.push(
@@ -800,18 +825,19 @@ window.__ModuleLoader__.load({
               ),
             );
           }
+          if (rows.length === 0) {
+            // 兜底：display 在但没有任何可渲染字段时也给一行，悬浮窗不能只剩标题。
+            rows.push(
+              React.createElement(
+                "div", { key: "empty", className: "ts-quota-pop-row" },
+                React.createElement("span", null, "暂无配额数据"),
+              ),
+            );
+          }
         } else {
           rows.push(React.createElement("div", { key: "err", className: "ts-quota-pop-err" }, props.message || "获取失败"));
         }
-        return React.createElement(
-          "div", { className: "ts-quota-pop" },
-          React.createElement(
-            "div", { className: "ts-quota-pop-head" },
-            React.createElement("span", null, label),
-            React.createElement("span", { className: "ts-quota-pop-sub" }, "套餐余额"),
-          ),
-          ...rows,
-        );
+        return React.createElement("div", { className: "ts-quota-pop" }, quotaPopHead(label), ...rows);
       }
 
       function QuotaReadout(props) {
@@ -920,11 +946,22 @@ window.__ModuleLoader__.load({
           : null;
 
         if (!state.loaded) {
+          // 加载态也渲染悬浮窗（此前只有一行 ···，悬停时面板完全不出）。
           return React.createElement(
             "div",
             Object.assign({ className: "ts-quota", style: containerStyle }, hoverProps),
             React.createElement("span", { style: { fontWeight: 500 } }, label),
             React.createElement("span", { style: { opacity: 0.6, fontSize: 10 } }, "···"),
+            hover
+              ? React.createElement(
+                  "div", { className: "ts-quota-pop" },
+                  quotaPopHead(label),
+                  React.createElement(
+                    "div", { className: "ts-quota-pop-row" },
+                    React.createElement("span", null, "加载中…"),
+                  ),
+                )
+              : null,
           );
         }
 
@@ -981,8 +1018,24 @@ window.__ModuleLoader__.load({
           // mimo 复用 balanceText 承载两种读数：本地用量（无窗口百分比）或
           // 官方「剩余 X%」（有 weeklyPct），所以标题不能写死「账户余额」。
           const head = p === "mimo"
-            ? (typeof d.weeklyPct === "number" ? "Token Plan" : "本地用量")
+            ? ((typeof d.weeklyPct === "number" || typeof d.fiveHrPct === "number") ? "Token Plan" : "本地用量")
             : "账户余额" + (d.currency ? " · " + d.currency : "");
+          // 官方读数（新端点）把单一窗口放在 weeklyPct：数值下面补进度条 + 重置时间，
+          // 与其它 provider 的窗口卡片及悬浮窗对齐。
+          const planWindow = p === "mimo" && typeof d.weeklyPct === "number"
+            ? React.createElement(
+                "div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
+                React.createElement(
+                  "div", { className: "ts-quota-pop-row" },
+                  React.createElement("span", null, "Token Plan已用"),
+                  React.createElement("b", null, d.weeklyPct + "%" + (d.weeklyResetsIn ? " · " + d.weeklyResetsIn : "")),
+                ),
+                React.createElement(
+                  "div", { className: "ts-quota-card-bar" },
+                  React.createElement("i", { style: { width: Math.max(0, Math.min(100, d.weeklyPct)) + "%" } }),
+                ),
+              )
+            : null;
           return React.createElement(
             "div", { className: "ts-card ts-quota-card" },
             React.createElement(
@@ -991,12 +1044,13 @@ window.__ModuleLoader__.load({
               React.createElement("span", { className: "ts-quota-card-status" }, head),
             ),
             React.createElement("div", { className: "ts-quota-card-value" }, d.balanceText),
+            planWindow,
           );
         }
         const windows =
           p === "mimo"
             ? [
-                ["套餐已用", d.fiveHrPct, d.fiveHrResetsIn],
+                ["套餐", d.fiveHrPct, d.fiveHrResetsIn],
                 ["本月总额度", d.weeklyPct, d.weeklyResetsIn],
               ]
             : [

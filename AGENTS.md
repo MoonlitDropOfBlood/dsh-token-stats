@@ -169,6 +169,8 @@ window.__ModuleLoader__.load({
 - **悬停面板是自绘的**（`.ts-quota` 容器 `position:relative` + `.ts-quota-pop` 绝对定位卡片，DSW 设计 token + 进度条），**不要退回原生 `title`**（用户嫌丑）。
 - 设置页余额区块 `QuotaSection` 走 `getAllQuotas`：卡片 = 非 `unconfigured` 的 provider；**未配置或 `auth_failed` 的 provider 显示「凭据设置」行**（password 输入 + 保存 → 官方 `remote.credentials.set(QUOTA_CRED_REFS[p], value)`（settings-models 同款用法；`"remote.credentials"` 已在 exports.inject 声明）→ `load(true)` 强制重拉）。**mimo 是例外**：它永远 `ok:true`（本地用量），所以不会进 `needsCred`，改为在卡片下方单独渲染一个**可选**的「MiMo 官方剩余用量」Cookie 输入行（`mimoLocalMode` = `display.weeklyPct` 不是数字时才出现），存 `XIAOMI_MIMO_COOKIE`；升级成功后该行自动消失。全部六种都为 `other` 类错误时整块仍渲染错误卡片。
 - **mimo 的显示文本复用 `balanceText`**（官方读数时是 `"剩余 78%"`，本地用量时是 `"今日 3.2M · 7d 9.2M"`），所以 client 侧按 `display.weeklyPct` 是否为数字区分标题（`Token Plan` / `本地用量`）与悬停面板说明；composer 行内位置窄，mimo 分支只取 ` · ` 前半段，完整内容在悬停面板。
+- **mimo 窗口行必须 fiveHrPct 与 weeklyPct 都认（v1.7.1 修复，勿回退）**：新端点 `/api/v1/user/usage` 把单一窗口放在 `weeklyPct`；旧端点 `tokenPlan/usage` 回退路径把套餐已用放在 `fiveHrPct`，且套餐=月度同一额度时 `weeklyPct` 被去重为 `null`、`balanceText` 也是 `null`——v1.7.0 悬浮窗只读 `weeklyPct`，这个形状下窗口整行被跳过，悬浮窗只剩标题（无进度条无重置时间），而设置页卡片走双窗口分支所以正常，症状就是"悬浮窗没内容"。设置页窗口行标签是「套餐」/「本月总额度」（行内会拼「已用」后缀，别写成「套餐已用」造成叠字）。
+- **`.ts-quota-pop` 宽度是 `min-width:230px + width:max-content + max-width:340px`**（v1.7.1 起）：短内容保持 230 的原观感，mimo 本地用量「本地用量 + 今日 X · 7d Y」这类长行自动放宽到一行放下，超 340 封顶换行。
 - 本地没有 node_modules 时，把 DSH 部署的 `@deepseek-ai`/`zod` junction 进 `node_modules/` 即可跑 smoke 脚本（已 gitignore；`smoke:typert` 也吃这套 junction，或用 `DSH_NODE_MODULES` 指向部署 node_modules）。
 
 ## 开发 / 验证
