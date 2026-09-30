@@ -682,7 +682,8 @@ window.__ModuleLoader__.load({
         if (lower.includes("mimo") || lower.includes("xiaomi")) return "mimo";
         return null;
       }
-      // 凭据设置行写入的 ref — 与 host QUOTA_PROVIDERS.apiKeyRefs 首选项对齐。
+      // 凭据输入行（现在只剩 mimo 的 Cookie 行）写入的 ref — 与 host
+      // QUOTA_PROVIDERS.apiKeyRefs 首选项对齐。
       // mimo 写 XIAOMI_MIMO_COOKIE（v1.7.0 起）：MiMo 没有开放任何 API Key
       // 配额接口（token-plan-* 主机只有 /v1 推理 API，实测见 scripts/probe-mimo.mjs），
       // 只有 dashboard 账号会话 Cookie 能拿到官方「剩余用量 %」。不填也不影响
@@ -994,8 +995,10 @@ window.__ModuleLoader__.load({
       }
 
       // ---- Settings 页余额区块 ----------------------------------------------
-      // 卡片 = 已配置的 provider；未配置或凭据失效（auth_failed）的 provider
-      // 在「凭据设置」行里粘贴凭据（remote.credentials.set → force 重拉）。
+      // 卡片 = 已配置的 provider；未配置 key 的 provider 什么都不显示（v1.7.2
+      // 起连「凭据设置」粘贴行也不渲染，用户反馈太吵）——key 在 DSH 模型设置里
+      // 配好后卡片自然出现。唯一例外是 mimo：零凭据可用（本地用量），保留一个
+      // 可选的 Cookie 升级入口（remote.credentials.set → force 重拉）。
 
       function QuotaCard(props) {
         const p = props.provider;
@@ -1131,19 +1134,17 @@ window.__ModuleLoader__.load({
 
         if (!quotas) return null;
         const names = QUOTA_PROVIDER_ORDER.filter((p) => quotas[p]);
-        // 卡片 = 非 unconfigured；设置行 = unconfigured 或 auth_failed。
+        // 卡片 = 非 unconfigured；未配置 key 的 provider 不再进入任何渲染
+        // （既无卡片也无凭据行，v1.7.2）。
         const configured = names.filter((p) => !(quotas[p] && quotas[p].ok === false && quotas[p].kind === "unconfigured"));
-        const needsCred = names.filter(
-          (p) => quotas[p] && quotas[p].ok === false && (quotas[p].kind === "unconfigured" || quotas[p].kind === "auth_failed"),
-        );
-        // mimo 零凭据可用（本地用量），所以不会落进 needsCred；这里在它还处于
+        // mimo 零凭据可用（本地用量），永远不是 unconfigured；这里在它还处于
         // 本地模式时补一个**可选**的 Cookie 入口——粘了就能升级成官方剩余用量 %。
         const mimo = quotas.mimo;
         const mimoLocalMode =
           !!(mimo && mimo.ok === true) &&
           typeof mimo.display === "object" &&
           typeof mimo.display.weeklyPct !== "number";
-        if (configured.length === 0 && needsCred.length === 0 && !mimoLocalMode) return null;
+        if (configured.length === 0 && !mimoLocalMode) return null;
         return React.createElement(
           "div", { className: "ts-block" },
           React.createElement(
@@ -1167,39 +1168,6 @@ window.__ModuleLoader__.load({
             ? React.createElement(
                 "div", { className: "ts-quota-list" },
                 configured.map((p) => React.createElement(QuotaCard, { key: p, provider: p, value: quotas[p] })),
-              )
-            : null,
-          needsCred.length > 0
-            ? React.createElement(
-                "div", { className: "ts-cred-block" },
-                React.createElement("div", { className: "ts-block-title" }, "凭据设置（粘贴后保存，自动重新拉取）"),
-                needsCred.map((p) => {
-                  return React.createElement(
-                    "div", { key: p, className: "ts-cred-row" },
-                    React.createElement("span", { className: "ts-cred-label" }, quotaProviderLabel(p)),
-                    React.createElement("input", {
-                      type: "password",
-                      className: "ts-cred-input",
-                      placeholder: p === "mimo"
-                        ? "粘贴 platform.xiaomimimo.com 的 Cookie 请求头（含 api-platform_serviceToken 与 userId）"
-                        : "粘贴 API Key",
-                      value: credDrafts[p] || "",
-                      onChange: (e) => setCredDrafts((d) => ({ ...d, [p]: e.target.value })),
-                      onKeyDown: (e) => {
-                        if (e.key === "Enter") saveCred(p, credDrafts[p] || "");
-                      },
-                    }),
-                    React.createElement(
-                      "button", {
-                        className: "ts-cred-save",
-                        disabled: !!credSaving[p] || !(credDrafts[p] && credDrafts[p].trim()),
-                        onClick: () => saveCred(p, credDrafts[p] || ""),
-                      },
-                      credSaving[p] ? "保存中…" : "保存",
-                    ),
-                    credMsgs[p] ? React.createElement("span", { className: "ts-cred-msg" }, credMsgs[p]) : null,
-                  );
-                }),
               )
             : null,
           // mimo 专用：可选的 dashboard Cookie —— 粘了把本地用量升级成官方
