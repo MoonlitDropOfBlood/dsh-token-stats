@@ -716,20 +716,24 @@ window.__ModuleLoader__.load({
         "xiaomimimo": "mimo",
         "xiaomi-token-plan-cn": "mimo",
         "mimo": "mimo",
+        // OpenCode Go：DSH 目录里的 route id 是 opencode / opencode-go。
+        "opencode-go": "opencode",
+        "opencode": "opencode",
       };
-      /** route id → 内部 key：精确查表未命中时对 mimo 做包含回退（route id 用户自由命名，如 xiaomi-token-plan-cn）。 */
+      /** route id → 内部 key：精确查表未命中时对 mimo / opencode 做包含回退（route id 用户自由命名，如 xiaomi-token-plan-cn）。 */
       function providerKeyForRoute(route) {
         if (!route) return null;
         const exact = PROVIDER_ALIASES[route];
         if (exact !== undefined) return exact;
         const lower = String(route).toLowerCase();
         if (lower.includes("mimo") || lower.includes("xiaomi")) return "mimo";
+        if (lower.includes("opencode")) return "opencode";
         return null;
       }
       // v1.8.0 起不再有凭据输入行：其他 provider 的 key 在 DSH 模型设置里配，
       // mimo 的 Cookie（XIAOMI_MIMO_COOKIE）没有 UI 入口，只认环境变量（host 侧
       // 凭据库未命中也会回退 process.env）——没配就是 unconfigured，与大家同规则。
-      const QUOTA_PROVIDER_ORDER = ["minimax", "deepseek", "kimi", "openrouter", "zhipu", "mimo"];
+      const QUOTA_PROVIDER_ORDER = ["minimax", "deepseek", "kimi", "openrouter", "zhipu", "mimo", "opencode"];
 
       function quotaProviderLabel(p) {
         if (p === "minimax") return "MiniMax";
@@ -738,6 +742,7 @@ window.__ModuleLoader__.load({
         if (p === "openrouter") return "OpenRouter";
         if (p === "zhipu") return "Zhipu";
         if (p === "mimo") return "MiMo";
+        if (p === "opencode") return "OpenCode Go";
         return p;
       }
 
@@ -776,6 +781,20 @@ window.__ModuleLoader__.load({
           }
           if (parts.length === 1) parts.push(React.createElement("span", { key: "na", style: strong }, "—"));
           return parts;
+        }
+        if (provider === "opencode") {
+          // OpenCode Go：三个窗口（5h 滚动 / 7d / 30d）的**已用**百分比。
+          const cell = (label, pct, key) =>
+            React.createElement("span", { key: key, style: strong }, label + " " + (typeof pct === "number" ? pct + "%" : "—"));
+          const sep = (key) => React.createElement("span", { key: key, style: { opacity: 0.5, fontSize: 10 } }, "|");
+          return [
+            labelEl,
+            cell("5h", d.fiveHrPct, "5"),
+            sep("sep1"),
+            cell("7d", d.weeklyPct, "7"),
+            sep("sep2"),
+            cell("30d", d.monthlyPct, "30"),
+          ];
         }
         // minimax / kimi / zhipu: 5h + 7d 双窗口套餐
         const five = typeof d.fiveHrPct === "number" ? d.fiveHrPct + "%" : "—";
@@ -841,6 +860,10 @@ window.__ModuleLoader__.load({
               ["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn],
               ["7d 窗口", d.weeklyPct, d.weeklyResetsIn],
             ];
+            if (props.provider === "opencode") {
+              // OpenCode Go 多一个 30d 窗口（Go 订阅的月度额度）。
+              windows.push(["30d 窗口", d.monthlyPct, d.monthlyResetsIn]);
+            }
           }
           for (const w of windows) {
             if (typeof w[1] !== "number") continue;
@@ -1092,6 +1115,8 @@ window.__ModuleLoader__.load({
             : [
                 ["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn],
                 ["7d 窗口", d.weeklyPct, d.weeklyResetsIn],
+                // OpenCode Go 的月度额度窗口（其余 provider 为 null → 不渲染）。
+                ...(p === "opencode" ? [["30d 窗口", d.monthlyPct, d.monthlyResetsIn]] : []),
               ];
         return React.createElement(
           "div", { className: "ts-card ts-quota-card" },

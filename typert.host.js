@@ -95,8 +95,12 @@ const quotaDisplaySchema = z
   .object({
     fiveHrPct: z.union([z.number(), z.null()]),
     weeklyPct: z.union([z.number(), z.null()]),
+    // 30d 窗口：目前只有 opencode-go 有（OpenCode Go 的 monthly 桶）；
+    // 其余 provider 恒为 null（字段恒在，网关 strict 校验）。
+    monthlyPct: z.union([z.number(), z.null()]),
     fiveHrResetsIn: z.union([z.string(), z.null()]),
     weeklyResetsIn: z.union([z.string(), z.null()]),
+    monthlyResetsIn: z.union([z.string(), z.null()]),
     balanceText: z.union([z.string(), z.null()]),
     balanceUsd: z.union([z.number(), z.null()]),
     currency: z.union([z.string(), z.null()]),

@@ -27,7 +27,7 @@
 | 🗂 汇总卡片 | 区间总 Tokens / 输入(含缓存) / 输出 |
 | 💾 本地持久化 | 聚合结果落盘 `<DSH_HOME>/data/dsh-token-stats/stats.json`，冷启动只扫描新会话、秒开；删除该文件可强制全量重扫 |
 | ⏱ 自动刷新 | 页面打开期间每 30s 刷新；历史回填期间每 2s 轮询进度 |
-| 💰 套餐余额 | 输入框工具行（model 选择器左侧）内联显示当前 provider 的**余额/套餐用量**，跟随当前模型自动切换；支持 minimax / deepseek / kimi / openrouter / zhipu / mimo（小米）；60s 轮询，点击立即刷新 |
+| 💰 套餐余额 | 输入框工具行（model 选择器左侧）内联显示当前 provider 的**余额/套餐用量**，跟随当前模型自动切换；支持 minimax / deepseek / kimi / openrouter / zhipu / mimo（小米）/ opencode-go；60s 轮询，点击立即刷新 |
 | 🌗 主题适配 | 全部使用 DSH 设计 token，明暗主题自动跟随 |
 
 > 套餐余额功能参考自 [dsh-musage](https://github.com/Thedeergod666/dsh-musage)（MIT），API Key 直接复用 DSH 模型设置里已配置的凭据（`credentials` 服务），无需重复配置。
@@ -43,7 +43,7 @@
 dsh plugin --profile web add /path/to/dsh-token-stats
 
 # 正式发布：从 GitHub Release tarball 安装
-dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-stats/releases/download/v1.9.0/duke-dsh-plugins-dsh-token-stats-1.9.0.tgz
+dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-stats/releases/download/v1.10.0/duke-dsh-plugins-dsh-token-stats-1.10.0.tgz
 ```
 
 重启 DSH 后，打开 DSH Web UI 的设置（侧栏底部），左侧导航会出现 **Token 统计** 页。
@@ -62,12 +62,15 @@ dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-sta
    - DeepSeek / OpenRouter 显示余额（如 `¥43.97` / `$12.50`）；
    - MiniMax / Kimi / 智谱 显示 `5h X% | 7d Y%`（5 小时 / 7 天窗口已用百分比，悬停查看重置时间）；
    - 小米 MiMo 与其他 provider 同规则：未配置时显示 `⚠`；配置 dashboard 登录 Cookie（环境变量 `XIAOMI_MIMO_COOKIE`，见下）后显示官方 `剩余 X%` + 周重置倒计时；Cookie 失效时自动退回本地用量统计 `今日 X · 7d Y`，不报错；
+   - OpenCode Go 显示 `5h X% | 7d Y% | 30d Z%`（三个窗口的已用百分比，来自官方 `opencode.ai/zen/go/v1/usage` 接口）；
    - 切换模型时自动切换 provider；每 60s 自动刷新，**点击读数立即强制刷新**；
    - 未配置对应 API Key 或拉取失败时显示 `⚠`（悬停查看原因）；当前 provider 不在支持列表时不占位。
 
 > **MiMo（小米）配置**：MiMo 与其他 provider 同规则——不配置就没有读数（composer `⚠`、设置页无卡片）。它没有 API Key 配额接口（`token-plan-*` 与 `api.` 主机只有 OpenAI 兼容的 `/v1` 推理 API，实测所有 Bearer 配额路径均 404；key 还与区域强绑定，CN key 在 SGP/AMS 主机一律 401），**唯一配额数据源是 dashboard 账号会话 Cookie**。
 >
 > 想要**官方剩余用量百分比**：打开 platform.xiaomimimo.com 登录后，F12 → Network 任一 `/api/v1/*` 请求 → 复制完整 `Cookie` 请求头（含 `api-platform_serviceToken` 与 `userId`）→ 设置环境变量 `XIAOMI_MIMO_COOKIE`（写入 DSH 进程环境后重启生效；凭据库里已存过该 ref 的话直接可用）。插件内置最小 cookie jar：服务端若在响应里 `Set-Cookie` 续发会话会被自动吸收并写回凭据库（跨轮询、跨重启生效）；**Cookie 彻底失效时自动静默退回本地用量统计（今日 / 近 7 天消耗），不会报错**。composer 读数按 route id 匹配（`xiaomi-mimo` / `xiaomimimo` / `xiaomi-token-plan-cn` / 名字含 xiaomi 或 mimo 均可）。
+
+> **OpenCode Go 配置**：与其他 provider 同规则——**不配置就没有读数**（composer `⚠`、设置页无卡片）。在 DSH 模型设置里给 `opencode-go` 这个 provider 填好 API Key 即可（插件读 `OPENCODE_GO_API_KEY`，同时也认 `OPENCODE_API_KEY` / `OPENCODE_GO_KEY` / `OPENCODE_ZERO_API_KEY` 这几个同义变量名）。数据来自 OpenCode 官方 JSON 接口 `GET https://opencode.ai/zen/go/v1/usage`（`Authorization: Bearer <key>`），返回 rolling / weekly / monthly 三个窗口的**已用**百分比（5 小时滚动 / 7 天 / 30 天）与重置时间。⚠️ 这个接口**只给百分比、不给金额**（社区插件显示的美元金额是按硬编码额度自己算的），所以插件只渲染百分比。
 
 ## 工作原理
 
@@ -90,7 +93,7 @@ TokenStatsService.getQuota()   ← ctx.remote.tokenStats.getQuota(provider, forc
 - 数据按**本地日历天** × **模型**（`provider::model`）聚合；`total = input + output + cacheRead + cacheWrite`。
 - 历史回填只统计插件启动前发生的调用，实时监听只统计启动后的，两者通过每个会话的事件序号水位线合并，不会重复。
 - 模型/模型来自 `assistant/message` 的 `message.source`（kind = 'model'），无需自行解析请求头。
-- 套餐余额：Host 半经 `credentials` 服务解析用户在模型设置里已配置的 API Key（引用命名遵循 `<ROUTE>_API_KEY` 约定；凭据库未命中时回退同名环境变量），GET provider 官方端点（宿主全局 fetch 优先，无 fetch 时回退 `subprocess` curl）；30s 缓存 + 失败指数退避（5s→30min），不落盘。**小米 MiMo 没有 API Key 配额接口**：配了 dashboard Cookie（`XIAOMI_MIMO_COOKIE`）走官方剩余用量 %，Cookie 失效时静默退回本地用量统计；未配置则与其他 provider 一样视为未配置。
+- 套餐余额：Host 半经 `credentials` 服务解析用户在模型设置里已配置的 API Key（引用命名遵循 `<ROUTE>_API_KEY` 约定；凭据库未命中时回退同名环境变量），GET provider 官方端点（宿主全局 fetch 优先，无 fetch 时回退 `subprocess` curl）；30s 缓存 + 失败指数退避（5s→30min），不落盘。**小米 MiMo 没有 API Key 配额接口**：配了 dashboard Cookie（`XIAOMI_MIMO_COOKIE`）走官方剩余用量 %，Cookie 失效时静默退回本地用量统计；未配置则与其他 provider 一样视为未配置。**OpenCode Go** 走官方 JSON 接口 `opencode.ai/zen/go/v1/usage`，给出 5h / 7d / 30d 三个窗口的已用百分比。
 
 ## 目录结构
 

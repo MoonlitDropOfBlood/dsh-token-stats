@@ -165,6 +165,35 @@ const QUOTA_PROVIDERS = {
     cookieRefs: ["XIAOMI_MIMO_COOKIE", "XIAOMI_TOKEN_PLAN_CN_COOKIE", "MIMO_COOKIE"],
     parse: parseMimoResponse,
   },
+  // OpenCode Go（OpenCode Zen 的 "Go" 订阅）—— 官方用量接口是 JSON，不需要扒 HTML。
+  //
+  // 端点 GET https://opencode.ai/zen/go/v1/usage（与 Go 仪表页同源），
+  // 鉴权 `Authorization: Bearer <Go API key>`；无凭据时上游返 401。
+  // 响应给出 rolling(5h)/weekly(7d)/monthly(30d) 三个窗口的**已用**百分比。
+  //
+  // 凭据 ref 依次尝试（谁命中算谁，命中后粘在 `_quotaActiveRef["opencode:api"]`）：
+  //  · OPENCODE_GO_API_KEY   —— **DSH 官方**：模型设置页把 key 写到这个 ref
+  //    （deriveKeyRef("opencode-go")，并持久化为 providers.opencode-go.apiKeyEnv）
+  //  · OPENCODE_API_KEY      —— DSH pi-ai 目录里 opencode / opencode-go 的 nativeAuth env
+  //    ⚠️ 它同时是 **opencode（Zen）** 路由的 ref：只有 Zen 权限、没有 Go 订阅的 key
+  //    能通过鉴权但拿不到用量 → 上游不给 usage，解析器会报"没有可用的用量窗口"。
+  //  · OPENCODE_GO_KEY       —— 社区约定（天枢 harness provider-presets）
+  //  · OPENCODE_ZERO_API_KEY  —— 另一个 DSH 插件的私有命名（Zen/Go key）
+  opencode: {
+    refs: [
+      "OPENCODE_GO_API_KEY",
+      "OPENCODE_API_KEY",
+      "OPENCODE_GO_KEY",
+      "OPENCODE_ZERO_API_KEY",
+    ],
+    urls: {
+      OPENCODE_GO_API_KEY: "https://opencode.ai/zen/go/v1/usage",
+      OPENCODE_API_KEY: "https://opencode.ai/zen/go/v1/usage",
+      OPENCODE_GO_KEY: "https://opencode.ai/zen/go/v1/usage",
+      OPENCODE_ZERO_API_KEY: "https://opencode.ai/zen/go/v1/usage",
+    },
+    parse: parseOpencodeResponse,
+  },
 };
 
 /** Xiaomi MiMo 常量 —— 唯一可用的配额接口在 dashboard，且只认账号会话 Cookie。
@@ -456,6 +485,103 @@ function formatBalance(n, currency) {
   return symbol + (n >= 100 ? n.toFixed(0) : n.toFixed(2));
 }
 
+// ----- opencode-go (OpenCode Zen "Go" 订阅) parser -----
+//   GET https://opencode.ai/zen/go/v1/usage
+//   { "usage": {
+//       "rolling": { "status": "ok", "percent": 12, "resetsAt": "2026-11-04T18:00:00Z" },
+//       "weekly":  { ... }, "monthly": { ... } } }
+//
+// ⚠️ **percent 是「已用」百分比**（剩余 = 100 - percent），别搞反：
+//   · 第三方 DSH 插件按 `remainingOf(percent) = 100 - percent` 渲染；
+//   · 另一套工具按 `usedUsd = limit_usd * percent / 100` 推导已用金额。
+//   两个独立来源一致，且与 Go 仪表页的 `usagePercent` 同义。
+// 窗口语义：rolling = 5 小时滚动窗口，weekly = 7 天，monthly = 30 天。
+// status 非 "ok"（如额度停用/超限）时该窗口不参与渲染，也不让整张卡片挂掉。
+
+/** 解析时间戳 → epoch ms：认得 ISO-8601 串、epoch 秒、epoch 毫秒（含纯数字串）。 */
+function parseIsoMillis(v) {
+  if (typeof v === "number" && isFinite(v)) return v >= 1e12 ? v : v * 1000;
+  if (typeof v === "string" && v.length > 0) {
+    // 纯数字串：epoch 秒或毫秒（上游两种都用过）
+    if (/^\d+$/.test(v)) {
+      const n = Number(v);
+      if (!isFinite(n) || n <= 0) return null;
+      return n >= 1e12 ? n : n * 1000;
+    }
+    const t = Date.parse(v);
+    return isNaN(t) ? null : t;
+  }
+  return null;
+}
+
+function parseOpencodeResponse(body) {
+  let json;
+  try {
+    json = typeof body === "string" ? JSON.parse(body) : body;
+  } catch {
+    return { ok: false, kind: "parse", message: "JSON 解析失败" };
+  }
+  if (!json || typeof json !== "object") {
+    return { ok: false, kind: "parse", message: "OpenCode Go 响应不是对象" };
+  }
+  // 上游把鉴权/配额错误放在 body 里（HTTP 200 也可能带 error）。
+  if (json.type === "error" || (json.error && typeof json.error === "object")) {
+    const msg = (json.error && json.error.message) || json.message || "上游返回错误";
+    const type = (json.error && json.error.type) || "";
+    const kind = /auth/i.test(String(type)) ? "auth_failed" : "server_error";
+    return { ok: false, kind, message: "OpenCode Go: " + msg };
+  }
+  const usage = json.usage;
+  if (!usage || typeof usage !== "object") {
+    return { ok: false, kind: "parse", message: "OpenCode Go 响应缺少 usage 字段" };
+  }
+  /** 取一个窗口：{usedPercent, resetsIn}；不可用返回 null。 */
+  const pick = (bucket) => {
+    const b = usage[bucket];
+    if (!b || typeof b !== "object") return null;
+    const status = typeof b.status === "string" ? b.status : "ok";
+    // status 不是 "ok" 的窗口没有可信读数：整个窗口跳过（不画 0% 的假进度条）。
+    // status 的取值集合上游未公开（Console 后端闭源），只观测到 "ok"。
+    if (status && status.toLowerCase() !== "ok") return null;
+    const pct = typeof b.percent === "number" && isFinite(b.percent) ? b.percent : null;
+    if (pct === null) return null;
+    const resetsAt = parseIsoMillis(b.resetsAt);
+    return {
+      usedPercent: Math.max(0, Math.min(100, Math.round(pct))),
+      resetsIn: resetsAt ? formatResetsIn(resetsAt) : null,
+    };
+  };
+  const rolling = pick("rolling");
+  const weekly = pick("weekly");
+  const monthly = pick("monthly");
+  if (!rolling && !weekly && !monthly) {
+    // 三个窗口都没读到：把各窗口的 status/percent 原样带上，便于诊断
+    // （典型：key 只有 Zen 权限没有 Go 订阅 → 上游不给 usage 或给非 ok 状态）。
+    const detail = ["rolling", "weekly", "monthly"]
+      .map((k) => {
+        const b = usage[k];
+        if (!b || typeof b !== "object") return k + "=缺失";
+        return k + "=" + (b.status || "ok") + "/" + (typeof b.percent === "number" ? b.percent : "无");
+      })
+      .join(", ");
+    return { ok: false, kind: "schema_unknown", message: "OpenCode Go 响应里没有可用的用量窗口 (" + detail + ")" };
+  }
+  return {
+    ok: true,
+    provider: "opencode",
+    display: {
+      fiveHrPct: rolling ? rolling.usedPercent : null,
+      weeklyPct: weekly ? weekly.usedPercent : null,
+      monthlyPct: monthly ? monthly.usedPercent : null,
+      fiveHrResetsIn: rolling ? rolling.resetsIn : null,
+      weeklyResetsIn: weekly ? weekly.resetsIn : null,
+      monthlyResetsIn: monthly ? monthly.resetsIn : null,
+      balanceText: null,
+      balanceUsd: null,
+    },
+  };
+}
+
 // ----- xiaomi mimo (小米 MiMo Token Plan) parser -----
 //   { "code": 0,
 //     "data": {
@@ -701,8 +827,10 @@ function quotaWireValue(parsed) {
     display: {
       fiveHrPct: typeof d.fiveHrPct === "number" && isFinite(d.fiveHrPct) ? d.fiveHrPct : null,
       weeklyPct: typeof d.weeklyPct === "number" && isFinite(d.weeklyPct) ? d.weeklyPct : null,
+      monthlyPct: typeof d.monthlyPct === "number" && isFinite(d.monthlyPct) ? d.monthlyPct : null,
       fiveHrResetsIn: typeof d.fiveHrResetsIn === "string" && d.fiveHrResetsIn ? d.fiveHrResetsIn : null,
       weeklyResetsIn: typeof d.weeklyResetsIn === "string" && d.weeklyResetsIn ? d.weeklyResetsIn : null,
+      monthlyResetsIn: typeof d.monthlyResetsIn === "string" && d.monthlyResetsIn ? d.monthlyResetsIn : null,
       balanceText: typeof d.balanceText === "string" && d.balanceText ? d.balanceText : null,
       balanceUsd: typeof d.balanceUsd === "number" && isFinite(d.balanceUsd) ? d.balanceUsd : null,
       currency: typeof parsed.currency === "string" ? parsed.currency : null,

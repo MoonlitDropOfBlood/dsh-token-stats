@@ -83,6 +83,114 @@ svc._quotaCache.zhipu = null;
 r = await svc.getQuota("zhipu", false);
 check("zhipu fixture parsed", r.value.ok === true && r.value.display.fiveHrPct === 80, JSON.stringify(r.value));
 
+// ====== opencode-go (OpenCode Zen "Go" 订阅) ======
+// 端点 GET https://opencode.ai/zen/go/v1/usage，Authorization: Bearer <key>，
+// 响应 { usage: { rolling, weekly, monthly } }，每项 { status, percent, resetsAt }。
+// ⚠️ percent 是**已用**百分比（剩余 = 100 - percent）。
+const OC_ISO = (ms) => new Date(ms).toISOString();
+svc._quotaApiKey = async () => ({ apiKeyRef: "TEST", apiKey: "k", cookieRef: null, cookie: null });
+svc._httpGet = async () => ({
+  ok: true,
+  body: JSON.stringify({
+    usage: {
+      rolling: { status: "ok", percent: 12, resetsAt: OC_ISO(Date.now() + 3600e3) },
+      weekly: { status: "ok", percent: 28, resetsAt: OC_ISO(Date.now() + 86400e3) },
+      monthly: { status: "ok", percent: 19, resetsAt: OC_ISO(Date.now() + 30 * 86400e3) },
+    },
+  }),
+});
+svc._quotaCache.opencode = null;
+r = await svc.getQuota("opencode", false);
+check(
+  "opencode fixture parsed (rolling/weekly/monthly → 5h/7d/30d 已用%)",
+  r.value.ok === true &&
+    r.value.provider === "opencode" &&
+    r.value.display.fiveHrPct === 12 &&
+    r.value.display.weeklyPct === 28 &&
+    r.value.display.monthlyPct === 19 &&
+    typeof r.value.display.fiveHrResetsIn === "string" &&
+    typeof r.value.display.monthlyResetsIn === "string" &&
+    r.value.display.balanceText === null,
+  JSON.stringify(r.value),
+);
+// percent 是已用%（不是剩余%）：12% 已用 == 88% 剩余。语义搞反就是余额显示反了。
+check("opencode percent is USED% not remaining%", r.value.display.fiveHrPct === 12);
+
+// 单个窗口 status 非 ok → 该窗口跳过（不给 0% 假读数），其余窗口照常
+svc._httpGet = async () => ({
+  ok: true,
+  body: JSON.stringify({
+    usage: {
+      rolling: { status: "ok", percent: 12, resetsAt: OC_ISO(Date.now() + 3600e3) },
+      weekly: { status: "over_limit", percent: 100, resetsAt: null },
+      monthly: { status: "ok", percent: 19, resetsAt: OC_ISO(Date.now() + 30 * 86400e3) },
+    },
+  }),
+});
+svc._quotaCache.opencode = null;
+r = await svc.getQuota("opencode", false);
+check(
+  "opencode non-ok window skipped, others intact",
+  r.value.ok === true &&
+    r.value.display.fiveHrPct === 12 &&
+    r.value.display.weeklyPct === null &&
+    r.value.display.monthlyPct === 19,
+  JSON.stringify(r.value),
+);
+
+// 上游把错误放在 body 里（HTTP 200 + type:error）→ auth_failed
+svc._httpGet = async () => ({ ok: true, body: JSON.stringify({ type: "error", error: { type: "AuthError", message: "Unauthorized" } }) });
+svc._quotaCache.opencode = null;
+r = await svc.getQuota("opencode", false);
+check("opencode body-level AuthError → auth_failed", r.value.ok === false && r.value.kind === "auth_failed", JSON.stringify(r.value));
+
+// usage 缺失 → parse 失败（不是 unconfigured：凭据是有的，是响应形状不认识）
+svc._httpGet = async () => ({ ok: true, body: JSON.stringify({ nope: true }) });
+svc._quotaCache.opencode = null;
+r = await svc.getQuota("opencode", false);
+check("opencode missing usage → parse error", r.value.ok === false && (r.value.kind === "parse" || r.value.kind === "schema_unknown"), JSON.stringify(r.value));
+
+// resetsAt 可能是 ISO / epoch 秒 / epoch 毫秒 —— 三种都要能算出倒计时
+for (const [label, value] of [
+  ["ISO", OC_ISO(Date.now() + 3600e3)],
+  ["epoch seconds", Math.floor((Date.now() + 3600e3) / 1000)],
+  ["epoch millis", Date.now() + 3600e3],
+]) {
+  svc._httpGet = async () => ({
+    ok: true,
+    body: JSON.stringify({ usage: { rolling: { status: "ok", percent: 5, resetsAt: value } } }),
+  });
+  svc._quotaCache.opencode = null;
+  r = await svc.getQuota("opencode", false);
+  check(
+    "opencode resetsAt as " + label + " → countdown",
+    r.value.ok === true && typeof r.value.display.fiveHrResetsIn === "string" && r.value.display.fiveHrResetsIn.length > 0,
+    JSON.stringify(r.value.display),
+  );
+}
+
+// 三个窗口全非 ok → 报错但带上各窗口 status/percent（key 只有 Zen 权限的典型症状）
+svc._httpGet = async () => ({
+  ok: true,
+  body: JSON.stringify({
+    usage: {
+      rolling: { status: "not_subscribed", percent: 0 },
+      weekly: { status: "not_subscribed", percent: 0 },
+      monthly: { status: "not_subscribed", percent: 0 },
+    },
+  }),
+});
+svc._quotaCache.opencode = null;
+r = await svc.getQuota("opencode", false);
+check(
+  "opencode all windows non-ok → schema_unknown with per-window detail",
+  r.value.ok === false &&
+    r.value.kind === "schema_unknown" &&
+    /not_subscribed/.test(r.value.message) &&
+    /rolling/.test(r.value.message),
+  JSON.stringify(r.value),
+);
+
 // ====== mimo：与其他 provider 同规则（v1.8.0）+ Cookie 官方读数 ======
 // 实测：MiMo 没有 API Key 配额接口（token-plan-* 只有 /v1 推理 API），
 // 唯一配额源是 dashboard Cookie；没配 Cookie 就是 unconfigured（与其他
@@ -267,14 +375,24 @@ svc._quotaApiKey = async () => ({ apiKeyRef: null, apiKey: null, cookieRef: null
 svc._httpGet = async () => { throw new Error("must not be called"); };
 const svc2 = new TokenStatsService(makeCtx(), undefined);
 svc2[initKey]();
+// svc2 是全新实例，不继承 svc 的桩：必须显式 stub 凭据解析，否则宿主环境里
+// 真有 OPENCODE_*/DEEPSEEK_* 之类变量时会**真的发网络请求**（env 泄漏）。
+svc2._quotaApiKey = async () => ({ apiKeyRef: null, apiKey: null, cookieRef: null, cookie: null });
+svc2._httpGet = async () => { throw new Error("must not be called"); };
 const all = await svc2.getAllQuotas(false);
 check("getAllQuotas envelope", all && all.ok === true && all.value && typeof all.value.quotas === "object");
 check(
-  "getAllQuotas covers 6 providers; all unconfigured (mimo no longer local-usage by default)",
-  ["minimax", "deepseek", "kimi", "openrouter", "zhipu", "mimo"].every(
+  "getAllQuotas covers 7 providers; all unconfigured (mimo no longer local-usage by default)",
+  ["minimax", "deepseek", "kimi", "openrouter", "zhipu", "mimo", "opencode"].every(
     (p) => all.value.quotas[p] && all.value.quotas[p].ok === false && all.value.quotas[p].kind === "unconfigured",
   ),
   JSON.stringify(all.value.quotas.mimo),
+);
+// opencode-go 没配 key → unconfigured → 设置页**不出现卡片**（与其他 provider 同规则）
+check(
+  "opencode unconfigured → no settings card (same rule as other providers)",
+  all.value.quotas.opencode && all.value.quotas.opencode.ok === false && all.value.quotas.opencode.kind === "unconfigured",
+  JSON.stringify(all.value.quotas.opencode),
 );
 
 // credentials 未命中 → 回退 process.env（v1.8.0：XIAOMI_MIMO_COOKIE 无 UI 入口，

@@ -1,7 +1,7 @@
 {
   "name": "@duke-dsh-plugins/dsh-token-stats",
-  "version": "1.9.0",
-  "description": "Token usage statistics for DeepSeek Harness (7/30-day per-model charts + yearly heatmap) plus an inline coding-plan balance/quota readout in the composer (minimax/deepseek/kimi/openrouter/zhipu/mimo; mimo uses the dashboard cookie since MiMo exposes no API-key quota API).",
+  "version": "1.10.0",
+  "description": "Token usage statistics for DeepSeek Harness (7/30-day per-model charts + yearly heatmap) plus an inline coding-plan balance/quota readout in the composer (minimax/deepseek/kimi/openrouter/zhipu/mimo/opencode-go; mimo uses the dashboard cookie since MiMo exposes no API-key quota API).",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/MoonlitDropOfBlood/dsh-token-stats.git"
