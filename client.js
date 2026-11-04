@@ -96,24 +96,75 @@ window.__ModuleLoader__.load({
 .ts-spinner{width:16px;height:16px;border-radius:50%;border:2px solid var(--dsw-alias-border-l1);border-top-color:var(--dsw-alias-brand-primary);animation:ts-spin .8s linear infinite;flex:none}
 @keyframes ts-spin{to{transform:rotate(360deg)}}
 
-/* Settings nav icon: DSH 0.1.x settings.section only projects id/order/
-   label, and the settings shell paints a generic gear for every external
-   section (client-ui-settings-general's navIcon()). registerSettingsNavIcon
-   marks our own nav row; hide the shell's gear and draw the chart-column
-   Lucide glyph as a currentColor mask so it follows the native nav
-   hover/active colors without changing the shell's 16px icon rhythm. */
+/* Settings nav icon.
+   DSH 0.2.2-rc.1 added the "settings.section.icon" slot: a plugin contributes
+   the nav glyph for its own section id, and the shell renders it inside its
+   decorative "span.navIcon" wrapper instead of painting the generic gear.
+   Older shells have no such slot — they paint a gear that is a DIRECT "svg"
+   child of the nav button — so this plugin keeps the legacy hide-gear-and-mask
+   fallback for them.
+   The two paths are mutually exclusive at runtime: registerSettingsNavIcon
+   only marks the row while the shell still uses the legacy shape, so the
+   fallback can never paint a SECOND glyph beside the slot-rendered one. */
 [data-dsh-token-stats-settings-nav]>svg:first-child{display:none}
 [data-dsh-token-stats-settings-nav]::before{content:'';flex:none;width:16px;height:16px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 3v16a2 2 0 0 0 2 2h16'/%3E%3Cpath d='M18 17V9'/%3E%3Cpath d='M13 17V5'/%3E%3Cpath d='M8 17v-3'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 3v16a2 2 0 0 0 2 2h16'/%3E%3Cpath d='M18 17V9'/%3E%3Cpath d='M13 17V5'/%3E%3Cpath d='M8 17v-3'/%3E%3C/svg%3E") center/contain no-repeat}
 `;
 
     // ---- Settings nav icon --------------------------------------------------
-    // DSH 0.1.x does not yet carry an icon through the settings.section
-    // registration contract: its shell projects only id/order/label and
-    // paints a generic gear for every external section. Mark only this
-    // plugin's localized nav row so the CSS above can replace the fallback
-    // gear; the disposer clears the marker for HMR / plugin disable.
+    // Two eras of the settings shell coexist here:
+    //   * 0.2.2-rc.1+ exposes the "settings.section.icon" slot, so the glyph
+    //     is contributed as a real SVG component and the shell never paints
+    //     its fallback gear for our id.
+    //   * older shells project only id/order/label from settings.section and
+    //     paint a generic gear that is a direct svg child of the nav button.
+    //     For those, mark only this plugin's localized nav row so the CSS
+    //     above can replace the fallback gear; the disposer clears the
+    //     marker for HMR / plugin disable.
     const SETTINGS_LABEL = "Token 统计";
+    const SETTINGS_SECTION_ID = "token-stats";
     const SETTINGS_NAV_MARKER = "data-dsh-token-stats-settings-nav";
+
+    // Settings nav glyph contributed through the `settings.section.icon` slot
+    // (DSH 0.2.2-rc.1+). The shell owns the button, the label and the
+    // decorative `span.navIcon` wrapper; it hands the component the requested
+    // edge `size` in pixels plus whether the row is `active`, and falls back
+    // to its own glyph when no contribution matches the section id. The glyph
+    // is the same Lucide "chart-column" the legacy CSS mask drew, so the look
+    // does not change: a 24x24 viewBox scaled to the requested size, stroked
+    // in currentColor so it follows the nav row's own color.
+    function TokenStatsNavIcon(props) {
+      const size = props && typeof props.size === "number" && props.size > 0 ? props.size : 16;
+      return React.createElement(
+        "svg",
+        {
+          width: size,
+          height: size,
+          viewBox: "0 0 24 24",
+          fill: "none",
+          stroke: "currentColor",
+          strokeWidth: 2,
+          strokeLinecap: "round",
+          strokeLinejoin: "round",
+          xmlns: "http://www.w3.org/2000/svg",
+          "aria-hidden": "true",
+        },
+        React.createElement("path", { key: "axis", d: "M3 3v16a2 2 0 0 0 2 2h16" }),
+        React.createElement("path", { key: "bar3", d: "M18 17V9" }),
+        React.createElement("path", { key: "bar2", d: "M13 17V5" }),
+        React.createElement("path", { key: "bar1", d: "M8 17v-3" }),
+      );
+    }
+
+    // Tell the two settings shells apart by the nav button's first element
+    // child: the legacy shell paints the gear `<svg>` straight into the
+    // button, while 0.2.2+ wraps the glyph in a `<span>` (the shell's
+    // `span.navIcon`). Only the legacy shape may use the CSS fallback —
+    // marking a 0.2.2+ row would paint a second glyph next to the one the
+    // `settings.section.icon` slot already renders.
+    function isLegacySettingsNav(button) {
+      const first = button.firstElementChild;
+      return !!first && first.tagName === "SVG";
+    }
 
     function registerSettingsNavIcon(label) {
       let disposed = false;
@@ -124,7 +175,7 @@ window.__ModuleLoader__.load({
         for (let i = 0; i < buttons.length; i++) {
           const button = buttons[i];
           const text = button.textContent ? button.textContent.trim() : "";
-          if (currentLabel.length > 0 && text === currentLabel) {
+          if (currentLabel.length > 0 && text === currentLabel && isLegacySettingsNav(button)) {
             button.setAttribute(SETTINGS_NAV_MARKER, "");
           } else {
             button.removeAttribute(SETTINGS_NAV_MARKER);
@@ -272,8 +323,10 @@ window.__ModuleLoader__.load({
         /* cosmetic only */
       }
 
-      // Mark our settings-nav row so the CSS above replaces the shell's
-      // fallback gear (no icon field exists in settings.section yet).
+      // Legacy fallback only: mark our settings-nav row so the CSS above
+      // replaces the shell's fallback gear on shells that predate the
+      // `settings.section.icon` slot. On 0.2.2+ the slot contribution owns the
+      // glyph and the row is deliberately left unmarked.
       try {
         ctx.effect(() => registerSettingsNavIcon(SETTINGS_LABEL));
       } catch (e) {
@@ -1273,7 +1326,7 @@ window.__ModuleLoader__.load({
       try {
         ctx.slots.inject("settings.section", () =>
           ctx.slots.register(
-            { name: "settings.section", id: "token-stats", order: 25, label: () => SETTINGS_LABEL },
+            { name: "settings.section", id: SETTINGS_SECTION_ID, order: 25, label: () => SETTINGS_LABEL },
             TokenStatsPage,
           ),
         );
@@ -1281,6 +1334,27 @@ window.__ModuleLoader__.load({
         // eslint-disable-next-line no-console
         (typeof console !== "undefined" && console.warn ? console.warn : () => {})(
           "[dsh-token-stats] settings.section registration failed:",
+          e,
+        );
+      }
+
+      // Settings nav glyph (DSH 0.2.2-rc.1+): the `settings.section.icon` slot
+      // addresses an icon by the SAME id as its `settings.section`
+      // contribution, so the shell renders this glyph instead of its fallback
+      // gear. Ids that match nothing never render. On shells without the slot
+      // the contribution simply stays unregistered and the legacy CSS
+      // fallback (gated on the legacy nav shape) takes over.
+      try {
+        ctx.slots.inject("settings.section.icon", () =>
+          ctx.slots.register(
+            { name: "settings.section.icon", id: SETTINGS_SECTION_ID, order: 25 },
+            TokenStatsNavIcon,
+          ),
+        );
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        (typeof console !== "undefined" && console.warn ? console.warn : () => {})(
+          "[dsh-token-stats] settings.section.icon registration failed:",
           e,
         );
       }

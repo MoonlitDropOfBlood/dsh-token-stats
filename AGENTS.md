@@ -26,6 +26,7 @@ dsh-token-stats/
 ├── scripts/smoke-quota.mjs   # quota 路径冒烟（stub _httpGet/_quotaApiKey 驱动各 provider fixture）
 ├── scripts/smoke-robust-host.mjs    # 0.1.7 容错回归：host init 在恶劣 seam 下不抛
 ├── scripts/smoke-robust-client.mjs  # 0.1.7 容错回归：client apply 在恶劣 seam 下不 reject
+├── scripts/smoke-settings-nav-icon.mjs # 设置导航图标回归：settings.section.icon 槽 + 两种外壳形状下不双图标
 ├── scripts/smoke-typert.mjs         # 用部署侧 dsh-typert-loader 真校验器跑 TYPERT manifest
 ├── scripts/smoke-compat.mjs         # 用部署侧 dsh-app-boot 的 evaluatePluginCompatibility 预检本包 manifest
 ├── scripts/repro-client-mount.mjs   # 用部署侧真 client 网关跑 $mount，验证 client 描述符能挂上
@@ -115,7 +116,10 @@ window.__ModuleLoader__.load({
 - **轮询/延迟**用浏览器原生 `setInterval`/`setTimeout`，在 `React.useEffect` 里返回清理函数。
 - **宽度自适应**用 `ResizeObserver` 监听页面容器，热力图天数由宽度计算（`weeks = min(floor((w - pads)/(cell+gap)), 53)`，`days = min(365, weeks*7)`）。
 - 设置页注册：`ctx.slots.inject("settings.section", () => ctx.slots.register({ name: "settings.section", id: "token-stats", order: 25, label: () => SETTINGS_LABEL }, TokenStatsPage))`。
-- **设置导航图标**：DSH 0.1.x 的 `settings.section` 只投影 `id/order/label`，设置壳对每个外部 section 统一画通用齿轮（`client-ui-settings-general` 的 `navIcon()`，没有公开图标字段）。client.js 里 `registerSettingsNavIcon(SETTINGS_LABEL)` 用 MutationObserver 给 `[role="dialog"] nav button` 中文本等于 section label 的行打 `data-dsh-token-stats-settings-nav` 标记，CSS 再隐藏 `>svg:first-child` 齿轮、用 `currentColor` mask 画 chart-column Lucide 图标（16px，跟随原生 hover/active 颜色）。换图标只需替换 CSS 里 data URI 的 SVG path（Lucide，24×24，stroke-width 2，stroke 用 black——mask 只取 alpha）。
+- **设置导航图标（两套外壳并存，v1.9.0 起）**：
+  - **DSH 0.2.2-rc.1+（新路径）**：宿主新增 `settings.section.icon` 槽，插件按 **section id** 注册图标组件即可——`ctx.slots.inject("settings.section.icon", () => ctx.slots.register({ name: "settings.section.icon", id: SETTINGS_SECTION_ID, order: 25 }, TokenStatsNavIcon))`。id 必须与 `settings.section` 贡献的 id 完全一致（`token-stats`），不匹配的 id 永不渲染；组件收到 `size`（像素）与 `active`，**按钮、label、装饰性 `span.navIcon` 容器都由外壳拥有**，图标命中时外壳不再画通用齿轮。图标用 `currentColor` 描边（stroke-only、viewBox 24×24、stroke-width 2），随原生 hover/active 颜色变化。
+  - **DSH 0.1.x–0.2.1（旧路径，保留兼容）**：没有该槽，外壳给每个外部 section 统一画通用齿轮，且齿轮是 nav button 的**直接 `svg` 子元素**。client.js 里 `registerSettingsNavIcon(SETTINGS_LABEL)` 用 MutationObserver 给 `[role="dialog"] nav button` 中文本等于 section label 的行打 `data-dsh-token-stats-settings-nav` 标记，CSS 再隐藏 `>svg:first-child` 齿轮、用 `currentColor` mask 画 chart-column Lucide 图标（16px）。换图标只需替换 CSS 里 data URI 的 SVG path（Lucide，24×24，stroke-width 2，stroke 用 black——mask 只取 alpha）。
+  - **两条路必须互斥**：0.2.2-rc.1 起外壳把图标包进了 `span.navIcon`，`button > svg:first-child` **再也匹配不到核心齿轮**，若旧 CSS 回退继续生效，就会出现「自定义图标 + 核心齿轮」双图标。因此 `registerSettingsNavIcon` 现在先按 nav button 的**第一个元素子节点**判定外壳形状（`SVG` = 旧外壳直接画齿轮；`SPAN` = 0.2.2+ 的 `span.navIcon` 包装），**只有旧形状才打标记**；新形状下图标由槽贡献，标记必须缺席。回归用例见 `scripts/smoke-settings-nav-icon.mjs`（`npm run smoke:navicon`），它同时断言槽 id 与 section id 一致、SVG 形状、以及两种外壳形状下的标记行为。
 
 ### 6. 标准安装 = dsh bundle（package.json 声明 + 包内 cordis.patch.yml）
 
@@ -180,6 +184,7 @@ npm run e2e              # 全链路：check + 全部 smoke + 3 个 repro（含�
 npm run check            # node --check index.js client.js typert.host.js
 npm run smoke:quota      # quota 解析/缓存/信封冒烟（无需 DSH）
 npm run smoke:robust     # 0.1.7 容错回归：host init / client apply 在恶劣 seam 下不抛（无需 DSH）
+npm run smoke:navicon    # 设置导航图标回归：settings.section.icon 槽 + 新旧两种外壳形状下不双图标（无需 DSH）
 npm run smoke:typert     # 用部署侧 dsh-typert-loader 的 validateTypertManifest 真校验 TYPERT（需 junction，见下）
 npm run smoke:compat     # 用部署侧 dsh-app-boot 真兼容门预检 manifest（防"静默跳过"，见 0.2.0 小节）
 node scripts/repro-client-mount.mjs     # 用部署侧真 client 网关跑 $mount，验证 client 描述符能挂上（需 junction）
@@ -211,6 +216,16 @@ dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机
 - **typert strict dispatch 在 0.2.0 下无回归**：用部署侧真 `Context + TypertRegistry + TypertGatewayService.invokeRpc` 驱动本包三个 Remote 方法全通过（`scripts/repro-strict-dispatch.mjs`）；typert manifest 校验（6 strict codec × create 工厂）同样通过。`markRemoteMethod` 手动驱动方式、`TypertRemoteService` 契约、`session/event`/`sessionQuery`/`credentials`/`modelDirectories` seam 名均未变（已对部署源码逐一核对）。
 - **组合只在启动时应用，装完必须重启**：0.2.0 的 host-runner 不 watch profile（`loadProfileDirectory` 无任何 reload 路径），`plugin_manager` 安装成功（`application: applied`）只表示 profile package.json/链接就位，运行中的宿主不会热挂载。装好后**重启 DSH**，然后 `node scripts/repro-profile-boot.mjs` 可在重启前预演真实 boot 组合（真实 `loadProfileDirectory`+`composeEntries` 跑本机 profile，断言本 bundle 不进 skippedBundles、挂载行进组合、Host 半能从 profile 链接 import）。
 - **smoke-store 的被测文件缺省改为本包 `index.js`**（原硬编码 profile 路径在插件未装/装成 scoped 目录名时直接 `ERR_MODULE_NOT_FOUND`）；`TOKEN_STATS_PLUGIN` 仍可覆盖。
+
+### 0.2.2-rc.1 兼容（v1.9.0 起）
+
+0.2.2-rc.1 只动了设置外壳的导航图标，但**足以让本插件的旧图标方案画成双图标**：
+
+- **外壳改了两处**（对照部署侧 `dsh-client-ui-settings-general/lib/client.js` 的 `SettingsPanel`）：① 新增 `settings.section.icon` 槽，插件可按 section id 贡献自己的图标；② 导航图标被包进装饰性容器 `span.navIcon`（`aria-hidden="true"`），渲染是 `renderSlot("settings.section.icon", { size: 16, active }, { only: row.id, fallback: navIcon(row.id) })`——**命中 id 时外壳不再画通用齿轮**，不命中才 fallback 到齿轮。
+- **症状**：本插件旧方案靠 CSS 隐藏齿轮（`button > svg:first-child`）再用 `::before` mask 画 chart-column。0.2.2 起齿轮不再是 button 的直接 `svg` 子元素，隐藏规则**匹配不到**，于是自定义图标与核心齿轮**同时显示**。
+- **修复（v1.9.0）**：走官方新槽——`ctx.slots.inject("settings.section.icon", ...)` 注册 id 与 `settings.section` 一致的图标组件（`TokenStatsNavIcon`，stroke-only、`currentColor`、viewBox 24×24），外壳负责按钮/label/`span.navIcon` 容器。同时把旧 CSS 回退**按外壳形状互斥化**：`isLegacySettingsNav(button)` 看 nav button 的第一个元素子节点（`SVG` = 旧外壳直接画齿轮；`SPAN` = 0.2.2+ 包装），**只有旧形状才打 `data-dsh-token-stats-settings-nav` 标记**，标记在时旧 CSS 生效（隐藏齿轮 + mask 图标），标记缺席时新槽负责图标，两条路永不同时生效。
+- **不靠版本号嗅探**：判据是真实 DOM 形状，宿主升级/回退都不会画错；`registerSettingsNavIcon` 的 MutationObserver 每次 DOM 变动都重新判定，重渲染后标记会跟着变。
+- **版本范围不变**：现有 `engines.dsh` / `@deepseek-ai/dsh` peer 串（`>=0.1.4-rc.2 <0.3.0 || ^0.2.1-rc.0`）已覆盖 0.2.2-rc.1（`npm run smoke:compat` 在 0.2.2-rc.1 上实测通过），因为本插件**同时**支持新旧外壳，不需要抬下限。
 
 
 改插件后**必须重启 DSH 进程**才生效（动态 HMR 不适用于正式安装的插件）。验证：

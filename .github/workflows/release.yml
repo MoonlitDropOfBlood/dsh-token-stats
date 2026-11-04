@@ -105,6 +105,7 @@ jobs:
             - 💰 套餐余额：会话输入框工具行（模型选择器左侧）内联显示当前 provider 的余额/用量（DeepSeek/OpenRouter 余额，MiniMax/Kimi/智谱 5h+7d 窗口，小米 MiMo Token Plan 套餐+本月），跟随当前模型自动切换，点击立即刷新（参考 [dsh-musage](https://github.com/Thedeergod666/dsh-musage)，MIT）。
             - 设置页新增「套餐余额」区块：所有已配置 API Key 的 provider 一行一张余额卡片。
             - 数据来源为 DSH 会话日志（`assistant/message` 的 usage），按天/按模型聚合，历史自动回填。
+            - 设置导航图标：DSH 0.2.2-rc.1+ 走官方 `settings.section.icon` 槽贡献自定义图标，同时兼容旧外壳（修复升级后「自定义图标 + 核心齿轮」双图标）。
 
             ### 📦 安装（标准 DSH bundle）
             ```bash
