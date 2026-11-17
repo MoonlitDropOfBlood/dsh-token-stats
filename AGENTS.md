@@ -18,24 +18,28 @@
 dsh-token-stats/
 ├── package.json          # ESM 双面包：dsh.client: {platform:"web"} + exports(., /client, /typert, /package.json)
 ├── index.js              # Host 半：TokenStatsService（TypertRemoteService 子类，类插件）
+├── bailian-quota.js      # 百炼 Token Plan 纯函数层（ACS3 签名/网关信封/窗口解析，零 DSH 依赖，node:crypto）
 ├── client.js             # Client 半：window.__ModuleLoader__.load bundle（设置页 Slot UI + Remote 调用）
 ├── typert.host.js        # Typert Host manifest：tokenStats Remote 服务的 schema/调用描述
 ├── cordis.patch.yml      # dsh bundle patch（挂载行）
 ├── .github/workflows/release.yml  # 打 v* 标签时构建并发布 GitHub Release
 ├── scripts/smoke-store.mjs   # store 持久化冒烟（TOKEN_STATS_PLUGIN 指定被测 index.js；缺省测本包 index.js）
 ├── scripts/smoke-quota.mjs   # quota 路径冒烟（stub _httpGet/_quotaApiKey 驱动各 provider fixture）
+├── scripts/smoke-bailian.mjs # 百炼纯逻辑冒烟（ACS3 金标准向量/请求形状/信封/窗口/display，66 断言）
 ├── scripts/smoke-robust-host.mjs    # 0.1.7 容错回归：host init 在恶劣 seam 下不抛
 ├── scripts/smoke-robust-client.mjs  # 0.1.7 容错回归：client apply 在恶劣 seam 下不 reject
 ├── scripts/smoke-settings-nav-icon.mjs # 设置导航图标回归：settings.section.icon 槽 + 两种外壳形状下不双图标
 ├── scripts/smoke-typert.mjs         # 用部署侧 dsh-typert-loader 真校验器跑 TYPERT manifest
 ├── scripts/smoke-compat.mjs         # 用部署侧 dsh-app-boot 的 evaluatePluginCompatibility 预检本包 manifest
 ├── scripts/repro-client-mount.mjs   # 用部署侧真 client 网关跑 $mount，验证 client 描述符能挂上
-├── scripts/repro-strict-dispatch.mjs # 用部署侧真 TypertRegistry+Gateway 跑 invokeRpc（0.2.0 strict dispatch 回归）
+├── scripts/repro-strict-dispatch.mjs # 用部署侧真 TypertRegistry+Gateway 跑 invokeRpc（0.2.0 strict dispatch 回归；v1.11.0 起驱动全部 6 个 Remote 方法 + credentials stub + 密钥不回显断言）
 ├── scripts/repro-all-manifests.mjs  # 全组合 typert manifest 注册冲突排查（手动诊断用）
 ├── scripts/repro-profile-boot.mjs   # 启动预演：真实 loadProfileDirectory+composeEntries 跑本机 profile，断言本 bundle 不被静默跳过
 ├── scripts/probe-mimo.mjs           # MiMo 端点探针：按凭据 ref 扫各区域主机的候选配额路径（不打印 key）
 ├── scripts/probe-mimo-nocookie.mjs  # MiMo 免 Cookie 探针：5 种鉴权形态 + key 换 token 的 POST 探测（不打印 key）
 ├── scripts/probe-mimo-session.mjs   # MiMo 会话机制探针：401 是否带 Set-Cookie + 扒 SPA bundle 找账户 API 面
+├── scripts/probe-bailian.mjs        # 百炼 AK/SK 全链路只读探针（ACS3 换 token→loginInfo→usage/subscription/addon；不打印密钥；无凭据时打印 RAM 配置指引 exit 0）
+├── scripts/bailian-workspace-init.mjs # 修 BailianGateway.Team.NotAuthorised：官方 workspace init 的步 0-5 授权子集（CreateUser→ListWorkspaces→ChangeUserPermissions），**跳过步 6-8 后付费开通（计费副作用）**
 ├── AGENTS.md             # 本文件
 ├── README.md
 └── LICENSE               # MIT
@@ -140,7 +144,7 @@ window.__ModuleLoader__.load({
 
 ### 7. 套餐余额（getQuota，参考 dsh-musage MIT 实现）
 
-`tokenStats.getQuota(provider, force)` 给 composer 工具行的内联读数供数；`tokenStats.getAllQuotas(force)` 并行拉全部 7 个 provider（设置页「套餐余额」区块用，返回 `{ quotas: Record<provider, QuotaValue> }`）：
+`tokenStats.getQuota(provider, force)` 给 composer 工具行的内联读数供数；`tokenStats.getAllQuotas(force)` 并行拉全部 8 个 provider（设置页「套餐余额」区块用，返回 `{ quotas: Record<provider, QuotaValue> }`）：
 
 - **凭据**：`ctx.get("credentials").resolve(ref)`；ref 候选遵循设置页派生规则 `<ROUTE>_API_KEY`（`provider.toUpperCase().replace(/[^A-Z0-9]+/g,"_")+"_API_KEY"`，见 `dsh-client-ui-settings-models` 的 `deriveKeyRef`）+ 各 provider 的内置默认 `apiKeyEnv`（deepseek-official 路由实际用 `DEEPSEEK_API_KEY`，见 `dsh-base/cordis.patch.yml`）。无 credentials 服务时回退 `process.env[ref]`。**不要**自己存 keys。`_quotaApiKey(provider)` 返回 `{ apiKey, apiKeyRef, cookie, cookieRef }`；`_quotaActiveRef[provider + ":api" | ":cookie"]` 缓存上次命中的 ref 保持粘性。**v1.6.0 引入的 mimo `apiKeyRefs` 双通道已在 v1.7.0 移除**——其余 6 个 provider 是单 `refs` 数组，mimo 只剩 `cookieRefs`。
 - **HTTP**：宿主全局 `fetch` 优先（Electron/Node 18+ 必有），`AbortSignal.timeout(15s)`；`typeof fetch !== "function"` 时回退 `ctx.get("subprocess")` spawn curl（musage 的形态）。zhipu 的 `Authorization` **不加** `Bearer ` 前缀（`authStyle: "raw"`）。`_httpGet/_curlGet(url, cred, authStyle, extraHeaders)` 的第 4 参是 provider 专属请求头（仅 mimo dashboard 用 `accept-language: en`），fetch 与 curl 两条路径都要带上。
@@ -167,8 +171,9 @@ window.__ModuleLoader__.load({
   5. **`resetsAt`** 三种格式都见过（ISO-8601 / epoch 秒 / epoch 毫秒），`parseIsoMillis` 三种都认；字段本身可缺省（窗口照常显示，只是没有倒计时）。`percent` 越界按 0..100 clamp，缺失/非数字则跳过该窗口。
   6. **凭据 ref 四个都试**（顺序 = 命中优先级，命中后粘在 `_quotaActiveRef["opencode:api"]`）：`OPENCODE_GO_API_KEY`（**DSH 官方**：模型设置页 `deriveKeyRef("opencode-go")` 派生并写入的就是它）→ `OPENCODE_API_KEY`（pi-ai 目录里 opencode / opencode-go 的 nativeAuth env；⚠️ 它同时是 **opencode（Zen）** 路由的 ref）→ `OPENCODE_GO_KEY`（社区约定）→ `OPENCODE_ZERO_API_KEY`（另一插件的私有命名）。四者是**同一个 Go key 的不同变量名**，不需要单独的 "zen" key。
   7. **只有百分比，没有金额**：`/zen/go/v1/usage` 不给 limit/balance（社区插件里的 `usedUsd` 是拿硬编码 `{12,30,60}` 自己算的）。绝对金额要按官方规则「5h = 月额度的 20%、weekly = 50%、monthly = 100%」从**当前模型**的月度限额推导（限额随模型变，$15–$100），且绝对金额在 `opencode.ai/_server` 那个 cookie 鉴权的 server-function 端点上才有——**需要 dashboard 会话 Cookie + wrk_ workspace id，API key 拿不到**，所以本插件只渲染百分比。插件内部 key 是 `opencode`，route id `opencode-go` → 内部 key 的映射只发生在 client 的 `PROVIDER_ALIASES`。
+- **bailian（阿里云百炼 Token Plan 个人版，v1.11.0 起）**：详见下方「百炼 Token Plan」专节。AK/SK 纯 HTTP 通道（官方 CLI 契约），凭据 ref `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET`（+可选 `ALIBABA_CLOUD_SECURITY_TOKEN`），设置页卡片配置（门控：配置了 qwen token plan 模型才显示）。
 - **缓存**：每 provider 成功 30s TTL；失败指数退避 5s→30min（`streak` 递增）；`force=true` 先清缓存再拉（客户端点击读数时传）。
-- **wire 形状**：`{ ok:true, value }` 信封内 `value` 是判别联合——成功 `{ ok:true, provider, display:{fiveHrPct,weeklyPct,monthlyPct,fiveHrResetsIn,weeklyResetsIn,monthlyResetsIn,balanceText,balanceUsd,currency} }`（**9 个字段恒在，缺省为 null**），失败 `{ ok:false, provider, kind, message }`。typert.host.js 的 zod schema 与此**逐字段对应**，改返回值必须同步改 schema（网关 strict 校验）。`monthlyPct`/`monthlyResetsIn` 是 v1.10.0 为 opencode-go 的 30d 窗口加的，**其余 provider 恒为 null**（`quotaWireValue` 统一补齐，老解析器不用改）。
+- **wire 形状**：`{ ok:true, value }` 信封内 `value` 是判别联合——成功 `{ ok:true, provider, display:{fiveHrPct,weeklyPct,monthlyPct,fiveHrResetsIn,weeklyResetsIn,monthlyResetsIn,balanceText,balanceUsd,currency} }`（**9 个字段恒在，缺省为 null**），失败 `{ ok:false, provider, kind, message }`。typert.host.js 的 zod schema 与此**逐字段对应**，改返回值必须同步改 schema（网关 strict 校验）。`monthlyPct`/`monthlyResetsIn` 是 v1.10.0 为 opencode-go 的 30d 窗口加的，v1.11.0 起 bailian 的订阅月窗口也用；**其余 provider 恒为 null**（`quotaWireValue` 统一补齐，老解析器不用改）。
 - **不落盘**：quota 状态纯内存（`_quotaCache`/`_quotaActiveRef`），与 stats store 完全无关，STORE_VERSION 不需要动。
 - **解析器**是模块级纯函数（minimax 双 schema / deepseek balance_infos / kimi limits+usage / openrouter credits / zhipu unit=3|6 / opencode usage 三窗口），改动后跑 `npm run smoke:quota`（脚本 stub `_httpGet`/`_quotaApiKey` 驱动各 provider fixture）。
 
@@ -184,20 +189,24 @@ window.__ModuleLoader__.load({
 - **mimo 窗口行必须 fiveHrPct 与 weeklyPct 都认（v1.7.1 修复，勿回退）**：新端点 `/api/v1/user/usage` 把单一窗口放在 `weeklyPct`；旧端点 `tokenPlan/usage` 回退路径把套餐已用放在 `fiveHrPct`，且套餐=月度同一额度时 `weeklyPct` 被去重为 `null`、`balanceText` 也是 `null`——v1.7.0 悬浮窗只读 `weeklyPct`，这个形状下窗口整行被跳过，悬浮窗只剩标题（无进度条无重置时间），而设置页卡片走双窗口分支所以正常，症状就是"悬浮窗没内容"。设置页窗口行标签是「套餐」/「本月总额度」（行内会拼「已用」后缀，别写成「套餐已用」造成叠字）。
 - **`.ts-quota-pop` 宽度是 `min-width:230px + width:max-content + max-width:340px`**（v1.7.1 起）：短内容保持 230 的原观感，mimo 本地用量「本地用量 + 今日 X · 7d Y」这类长行自动放宽到一行放下，超 340 封顶换行。
 - **opencode-go 是三窗口 provider（v1.10.0 起）**：它比别的 provider 多一个 30 天窗口，所以 `quotaValueSpans`（composer 行内）、`QuotaHoverCard`（悬停）、`QuotaCard`（设置页）三处都有 `provider === "opencode"` 分支——行内是 `5h X% | 7d Y% | 30d Z%`，窗口标签分别是「5h 窗口」「7d 窗口」「30d 窗口」。⚠️ **host 侧 `QUOTA_PROVIDERS` 的 key 决定"拉哪些"，client 侧 `QUOTA_PROVIDER_ORDER` 决定"渲染哪些"，两张表互相独立**——只加一边就会出现「每 60s 拉一次但看不见卡片」或「有卡片但没有数据」。`PROVIDER_ALIASES` 漏了 `opencode-go → opencode` 则 composer 读数**整行不渲染**（`providerKeyForRoute` 返回 null）。
+- **bailian 是单窗口 provider（v1.11.0 起）**：三处渲染同样各有 `provider === "bailian"` 分支——行内 `月 X%`（monthlyPct 缺省时取 balanceText 前半段），窗口标签「订阅月」；balanceText 承载「套餐 specCode · 剩 N 天」或「加购包剩余 X Credits」，悬停/卡片标题按前缀区分「套餐信息」/「加购包」（别落到通用的「账户余额」）。legacy 5h/周字段若回归自动恢复展示。**设置页另有 `BailianSetupCard` 凭据配置卡片**：门控 = `getBailianSetup().modelConfigured`（host 侧任一 qwen token plan 模型 key ref 可解析），未配置模型完全不渲染；保存/清除成功后 `window.dispatchEvent("ts-bailian-credentials-changed")` 让 QuotaSection 立即强刷（不用等 60s）。route 别名 `qwen-token-plan-cn / qwen-token-plan / qwen-token-plan-individual`，包含回退只认 `qwen-token-plan / bailian-tpp / bailian-token`——**按量付费的普通 `bailian`/dashscope 路由不匹配**（没有套餐配额，匹配了只会显示 unconfigured 错误读数）。
 - 本地没有 node_modules 时，把 DSH 部署的 `@deepseek-ai`/`zod` junction 进 `node_modules/` 即可跑 smoke 脚本（已 gitignore；`smoke:typert` 也吃这套 junction，或用 `DSH_NODE_MODULES` 指向部署 node_modules）。
 
 ## 开发 / 验证
 
 ```bash
 npm run e2e              # 全链路：check + 全部 smoke + 3 个 repro（含启动预演；最终验收命令）
-npm run check            # node --check index.js client.js typert.host.js
+npm run check            # node --check index.js bailian-quota.js client.js typert.host.js
 npm run smoke:quota      # quota 解析/缓存/信封冒烟（无需 DSH）
+npm run smoke:bailian    # 百炼纯逻辑冒烟：ACS3 金标准向量/请求形状/信封/窗口/display（无需 DSH）
 npm run smoke:robust     # 0.1.7 容错回归：host init / client apply 在恶劣 seam 下不抛（无需 DSH）
 npm run smoke:navicon    # 设置导航图标回归：settings.section.icon 槽 + 新旧两种外壳形状下不双图标（无需 DSH）
 npm run smoke:typert     # 用部署侧 dsh-typert-loader 的 validateTypertManifest 真校验 TYPERT（需 junction，见下）
 npm run smoke:compat     # 用部署侧 dsh-app-boot 真兼容门预检 manifest（防"静默跳过"，见 0.2.0 小节）
+npm run probe:bailian    # 百炼 AK/SK 全链路只读探针（无凭据时打印 RAM 配置指引；不打印密钥）
+npm run fix:bailian-workspace  # RAM 子账号 NotAuthorised 修复（业务空间授权三步，无计费操作）
 node scripts/repro-client-mount.mjs     # 用部署侧真 client 网关跑 $mount，验证 client 描述符能挂上（需 junction）
-node scripts/repro-strict-dispatch.mjs  # 用部署侧真 TypertRegistry+Gateway invokeRpc 驱动本包三个 Remote 方法（需 junction）
+node scripts/repro-strict-dispatch.mjs  # 用部署侧真 TypertRegistry+Gateway invokeRpc 驱动本包全部 6 个 Remote 方法（需 junction）
 node scripts/repro-profile-boot.mjs     # 启动预演：真实 loadProfileDirectory+composeEntries 跑 DSH_PROFILE_DIR，断言 bundle 不被跳过
 dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机 DSH profile
 ```
@@ -236,6 +245,33 @@ dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机
 - **不靠版本号嗅探**：判据是真实 DOM 形状，宿主升级/回退都不会画错；`registerSettingsNavIcon` 的 MutationObserver 每次 DOM 变动都重新判定，重渲染后标记会跟着变。
 - **版本范围不变**：现有 `engines.dsh` / `@deepseek-ai/dsh` peer 串（`>=0.1.4-rc.2 <0.3.0 || ^0.2.1-rc.0`）已覆盖 0.2.2-rc.1（`npm run smoke:compat` 在 0.2.2-rc.1 上实测通过），因为本插件**同时**支持新旧外壳，不需要抬下限。
 
+
+### 百炼 Token Plan（v1.11.0 起）
+
+阿里云百炼 Token Plan **个人版**配额通道（内部 provider key `bailian`）。调研定稿见记忆 `aliyun-token-plan-quota-api-reality`；参考实现：官方开源 CLI [modelstudioai/cli](https://github.com/modelstudioai/cli)（gateway.ts / refresh-token.ts / usage/token-plan.ts）、[KS-OTO/tracking-llm-plan-usage](https://github.com/KS-OTO/tracking-llm-plan-usage)（server/aliyun-console.ts + 实测研究文档）、[AliyunTokenBar](https://github.com/1020645823-dev/AliyunTokenBar)（DTO/窗口变迁史）。
+
+- **为什么不是 API Key**：模型 key（`sk-sp-`）只授权推理。实测推理网关 `/compatible-mode/v1/*` 除 models 外全是 catch-all 400 "model missing"，`/api/v1/*` 404，chat 响应头无配额字段；浏览器控制台网关 `/data/api.json` 只认 Cookie（Bearer 一律 `BailianGateway.Login.NotLogined`）。官方文档里的数据面 Bearer 路由 `dashscope.aliyuncs.com/api/v1/tokenplan/*` **截至 2026-11-16 仍 404 空体未开放**（真实路由错 key 是 401 JSON，可区分）——若未来开放，在 `_fetchBailianQuota` 里留了切换位（优先直查，免签名）。
+- **通道 A（已实现）：AK/SK 纯 HTTP，免 Cookie 自动续期**：
+  1. `buildTokenRequest`：ACS3-HMAC-SHA256 签名（node:crypto，`bailian-quota.js`）→ `POST https://modelstudio.<region>.aliyuncs.com/modelstudio/cli/generateAccessToken`（x-acs-action `GenerateCLIAccessToken`、x-acs-version `2026-02-10`、空 body）→ 响应递归找 `cliAccessToken`。签名有 KS-OTO 实测金标准向量锁定（`smoke:bailian`），已被真实网关接受（缺权限返 403 NoPermission+AuthAction，而非 SignatureDoesNotMatch）。
+  2. `buildGatewayRequest`：`POST https://<csGateway>/cli/api.json?action=<action>&product=sfm_bailian&api=<enc>`，`Authorization: Bearer <cliAccessToken>`，form 只有 `params`（{Api,V:"1.0",Data:{…,cornerstoneParam}}）+ `region`。区域矩阵在 `BAILIAN_REGIONS`（cn-beijing/ap-southeast-1 × domestic/international 四主机）。
+  3. 业务 RPC：`zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage`（必需）+ `subscription` / `addon/summary`（辅助：**subscription 解析成功才 24h 长缓存，缺失只短缓存 5min 自愈；force 刷新整体丢弃**——见下方缓存坑）。`reset-card/list`（重置卡，数组负载）暂未接。
+- **凭据**：ref `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET`（+可选 STS `ALIBABA_CLOUD_SECURITY_TOKEN`），credentials 优先 env 回退（`_resolveCredRefValue`）。**配置入口 = 设置页 BailianSetupCard**（`saveBailianCredentials` 经 `credentials.set` 写官方凭据库，绝不回显 Secret；`clearBailianCredentials` unset）。RAM 用户需要：自定义策略 `modelstudio:GenerateCLIAccessToken`（Resource *）+ `AliyunTokenPlanReadOnlyAccess` + **加入百炼业务空间**（否则 `BailianGateway.Team.NotAuthorised`）。
+- **NotAuthorised 修复（2026-11-17 实测）**：RAM 策略齐全后仍报 `BailianGateway.Team.NotAuthorised` = RAM 子账号没进百炼**业务空间**（RAM 权限与业务空间权限是两套独立体系）。修复 = 官方 `bl workspace init` 的**授权子集**，`npm run fix:bailian-workspace`（scripts/bailian-workspace-init.mjs，用 RAM 用户**自己的** AK/SK 即可）：
+  1. 换 token + loginInfo 取 `aliyun.uid`（spaceInited=false 才调 `zeldaEasy.bailian-dash-workspace.space.initSpace`）；
+  2. **BailianControl OpenAPI**（ROA，host `bailiancontrol.<region>.aliyuncs.com`，version **2024-08-16**，ACS3 签名同 bailian-quota.js）：`CreateUser` POST `/bailianControl/User/createUser` body `{data:JSON.stringify({reqDTO:{outerKey:uid,nickName:uid,userName:uid}})}`（幂等，already exists 忽略）→ `ListWorkspaces` GET `/bailianControl/workspaces?data=<enc({reqDTO:{},cornerstoneParam:{}})>` 取默认空间 `tenantId` 作 agentId → `ChangeUserPermissions` POST `/bailianControl/serviserAuthorityPolicy/resetPolicies4Agent` body `{data:JSON.stringify({cornerstoneParam:{},outerKey:uid,policyIndexList:[1],agentId})}`；
+  3. **刻意跳过官方 init 步 6-8（queryBuyPostpaidResult/buyPostpaidCommodity 后付费开通）——计费副作用，Token Plan 用户不需要**。
+  实测：三步完成后 usage/subscription/addon 立即全通（essential/VALID/剩29天/月已用3.6%）。query 的 canonical string 需 RFC3986 编码+键排序（encodeURIComponent 再补 `!'()*`）。
+- **aux 缓存坑（v1.11.0 实测修复，勿回退）**：策略生效有**分钟级逐 RPC 传播窗口**——usage 已通但 subscription 仍 NotAuthorised 时，若把「半成功」辅助数据长缓存 24h，会把 balanceText（套餐信息行）锁缺一天。现规则：subscription 解析成功才 24h，否则 5min；`force=true` 连 `_bailianAuxCache` 一起丢。排查 live 宿主读数用网关 RPC（记忆 dsh-gateway-rpc-self-service；信封是**三层** result.value.value）。
+- **门控**：`getBailianSetup().modelConfigured` = 任一模型 key ref（`QWEN_TOKEN_PLAN_CN_API_KEY` / `QWEN_TOKEN_PLAN_API_KEY` + llm 路由 nativeAuth.env）可解析。llm 服务扫描（`listConfigurableProviders` + `listProviders`）只用于派生 region/site 与收集自定义 ref，**只认 declared/已注册路由**；按量付费 bailian/dashscope 路由不匹配。llm 不可用时退化为纯 key ref 探测。
+- **响应契约（勿回退）**：
+  - 信封四层 `root.data.DataV2.data.data`，逐层容忍回退（`unwrapPayload`）。
+  - **失败 = HTTP 200 + `data.success:false` + errorCode**，不能按状态码判 ok。⚠️ 真实失败体同时带 `successResponse:true`（传输层成功）——**越内层越具体，任一层显式 false 即业务拒绝**（probe 子代理实测踩过的真 bug）。
+  - 窗口字段通名正则 `/^per(\d+)(Hour|Day|Week|Month)(Percentage|ResetTime)$/`。**Percentage 是 0-1 比值**（实测 0.2750906925 ⇒ 控制台 27.51%；官方 quota-box.ts 注释 "[0,1]" + renderGauge(×100)）；>1 防御式视为已是百分数；钳制 0-100、0.1 精度。**官方 2026-08-15 取消 5h、2026-09 取消周限额 → 当前个人版只回 per1Month***；两字段全缺 → 隐藏窗口不显 0。
+  - `NotLogined` → 用 AK/SK 强制重换 token 重试**一次**（官方 refresh-token.ts 同款，不循环）；token 内存缓存 TTL 10min 削峰（按 AK+region 键，token 本身数日有效）。
+  - subscription 三必填 specCode/status/remainingDays；addon 全可选缺省 0。balanceText：addon.totalCredits>0 → 「加购包剩余 X Credits」，否则 subscription → 「套餐 specCode · 剩 N 天」。
+- **Credits ≠ token**：不做 token→Credits 换算（官方明示统计口径差异 + 夜间折扣/预览期折扣漂移）。统计页 token 聚合与配额读数是两个独立维度。
+- **验证**：`npm run smoke:bailian`（66 断言纯逻辑）；`npm run probe:bailian`（真实 AK/SK 全链路只读探针，无凭据打印指引 exit 0）；`repro-strict-dispatch` 驱动全部 6 个 Remote 方法（credentials stub + 密钥不回显断言）。**真实账号全链路已实测通过（2026-11-17）**：RAM AK/SK → token → loginInfo(ALIYUN_LOGINED) → workspace 授权三步 → usage/subscription/addon 全通；live 宿主经网关 RPC force 刷新确认 monthlyPct/reset/balanceText 正确。
+- **Remote 方法 ×6**：getStats / getQuota / getAllQuotas / getBailianSetup / saveBailianCredentials / clearBailianCredentials。新增方法三处同步：index.js markRemoteMethod + typert.host.js invocation/schema（strict codec 必须带 create 工厂）+ client.js CLIENT_REMOTE 描述符（passthrough + createPassthrough）。
 
 改插件后**必须重启 DSH 进程**才生效（动态 HMR 不适用于正式安装的插件）。验证：
 1. 设置 → 侧栏导航出现 **Token 统计**。

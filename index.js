@@ -41,6 +41,20 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  BAILIAN_REGIONS,
+  BAILIAN_USAGE_API,
+  BAILIAN_SUBSCRIPTION_API,
+  BAILIAN_ADDON_API,
+  buildTokenRequest,
+  parseTokenResponse,
+  buildGatewayRequest,
+  parseGatewayResponse,
+  discoverWindows,
+  parseSubscriptionPayload,
+  parseAddonPayload,
+  bailianDisplay,
+} from "./bailian-quota.js";
 
 const DAY_MS = 86400000;
 /** How many days of history to keep (a bit over one year). */
@@ -194,7 +208,27 @@ const QUOTA_PROVIDERS = {
     },
     parse: parseOpencodeResponse,
   },
+  // 阿里云百炼 Token Plan（个人版）—— 配额在**控制台网关**，模型 key（sk-sp-）
+  // 只授权推理、查不了用量（实测 catch-all 400 / NotLogined）。官方 CLI
+  // （modelstudioai/cli）契约：AK/SK ACS3-HMAC-SHA256 签名 →
+  // GenerateCLIAccessToken 换短期 cliAccessToken → Bearer 打 /cli/api.json
+  // （免 Cookie、免 sec_token，NotLogined 时用 AK/SK 自动重换一次）。
+  // 凭据在设置页「百炼 Token Plan 凭据」卡片填写（**仅当配置了 qwen token plan
+  // 模型时显示**），写入凭据库 ALIBABA_CLOUD_ACCESS_KEY_ID / SECRET（env 回退）。
+  // 纯逻辑（签名/信封/窗口解析）在 bailian-quota.js；探针 scripts/probe-bailian.mjs。
+  // 个人版当前只有订阅月窗口（官方 2026-08/09 先后取消 5h/周限额）；
+  // per*Percentage 是 0-1 比值（×100 展示）。不做 token→Credits 换算。
+  bailian: {
+    akRefs: ["ALIBABA_CLOUD_ACCESS_KEY_ID"],
+    skRefs: ["ALIBABA_CLOUD_ACCESS_KEY_SECRET"],
+    // 无 urls/parse：_fetchProviderQuota 分流到专用 _fetchBailianQuota（两步链路 + POST）。
+  },
 };
+
+/** 百炼 cliAccessToken 内存缓存 TTL（削峰；token 本身数日有效，失效靠 NotLogined 重换）。 */
+const BAILIAN_TOKEN_TTL_MS = 10 * 60 * 1000;
+/** 订阅/加购包辅助数据变化慢，24h 低频拉取（官方 CLI 同款策略）。 */
+const BAILIAN_AUX_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** Xiaomi MiMo 常量 —— 唯一可用的配额接口在 dashboard，且只认账号会话 Cookie。
  *  协议来源：MiMo 桌面端 IPC `mimo:getUserUsage`（逆向记录见
@@ -810,6 +844,13 @@ function parseCurlOutput(rawText) {
   return { body, statusCode };
 }
 
+/** AK 掩码（前4后4），任何返回值/日志都不出现完整 AK/SK/token。 */
+function maskAk(ak) {
+  const s = String(ak || "");
+  if (s.length <= 8) return "****";
+  return s.slice(0, 4) + "****" + s.slice(-4);
+}
+
 /** Trim a parser result to the exact wire shape declared in typert.host.js. */
 function quotaWireValue(parsed) {
   if (!parsed || parsed.ok !== true) {
@@ -887,6 +928,9 @@ export class TokenStatsService extends TypertRemoteService {
     this._quotaCache = Object.create(null);
     this._quotaActiveRef = Object.create(null);
     this._curlPath = null;
+    // 百炼 Token Plan：AK/SK→token 缓存（按 AK+region 键）与订阅/加购包辅助缓存。
+    this._bailianTokenCache = Object.create(null);
+    this._bailianAuxCache = null;
 
     try {
       markRemoteMethod(this, "getStats", "getStats");
@@ -902,6 +946,21 @@ export class TokenStatsService extends TypertRemoteService {
       markRemoteMethod(this, "getAllQuotas", "getAllQuotas");
     } catch (e) {
       this._backfill.error = "getAllQuotas 未发布: " + String((e && e.message) || e);
+    }
+    try {
+      markRemoteMethod(this, "getBailianSetup", "getBailianSetup");
+    } catch (e) {
+      this._backfill.error = "getBailianSetup 未发布: " + String((e && e.message) || e);
+    }
+    try {
+      markRemoteMethod(this, "saveBailianCredentials", "saveBailianCredentials");
+    } catch (e) {
+      this._backfill.error = "saveBailianCredentials 未发布: " + String((e && e.message) || e);
+    }
+    try {
+      markRemoteMethod(this, "clearBailianCredentials", "clearBailianCredentials");
+    } catch (e) {
+      this._backfill.error = "clearBailianCredentials 未发布: " + String((e && e.message) || e);
     }
 
     // Restore the previous run's aggregates so a cold start only scans new sessions.
@@ -1437,6 +1496,67 @@ export class TokenStatsService extends TypertRemoteService {
     return this._curlGet(url, key, authStyle, extraHeaders);
   }
 
+  /** POST one endpoint (fetch first, curl fallback). 返回 {status, body, error?}：
+   *  百炼链路要把原始 status+text 交给 parseTokenResponse/parseGatewayResponse
+   *  （业务错误是 HTTP 200 + success:false，不能按状态码判 ok）。 */
+  async _httpPost(url, headers, body) {
+    if (typeof fetch === "function") {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { accept: "*/*", ...(headers || {}) },
+          body: body || "",
+          signal: AbortSignal.timeout(QUOTA_REQUEST_TIMEOUT_MS),
+        });
+        const text = await res.text();
+        return { status: res.status, body: text };
+      } catch (e) {
+        return { status: 0, body: "", error: "fetch 失败: " + String((e && e.message) || e) };
+      }
+    }
+    const subprocess = this.ctx.get("subprocess");
+    if (!subprocess || typeof subprocess.spawn !== "function") {
+      return { status: 0, body: "", error: "subprocess service 不可用, 且宿主无全局 fetch" };
+    }
+    try {
+      const c = await this._resolveCurl();
+      const argv = [
+        c, "-sS",
+        "--max-time", String(Math.floor(QUOTA_REQUEST_TIMEOUT_MS / 1000)),
+        "-w", "\n%{http_code}",
+        "-X", "POST",
+      ];
+      for (const [name, value] of Object.entries(headers || {})) {
+        argv.push("-H", name + ": " + value);
+      }
+      argv.push("--data", body || "", url);
+      const handle = subprocess.spawn({
+        argv,
+        cwd: "/",
+        stdio: {
+          stdin: "ignore",
+          stdout: { maxBytes: 8 * 1024 * 1024 },
+          stderr: { maxBytes: 64 * 1024 },
+        },
+        graceMs: QUOTA_REQUEST_TIMEOUT_MS,
+      });
+      const outcome = await handle.done;
+      const stdout = handle.collected && handle.collected.stdout
+        ? handle.collected.stdout.readFrom(0)
+        : { text: "" };
+      const stderr = handle.collected && handle.collected.stderr
+        ? handle.collected.stderr.readFrom(0)
+        : { text: "" };
+      if (outcome.exitCode !== 0) {
+        return { status: 0, body: "", error: "curl 退出 " + outcome.exitCode + " · " + stderr.text.slice(0, 200) };
+      }
+      const parsed = parseCurlOutput(stdout.text);
+      return { status: parsed.statusCode, body: parsed.body };
+    } catch (e) {
+      return { status: 0, body: "", error: String((e && e.message) || e) };
+    }
+  }
+
   async _fetchProviderQuota(provider) {
     const cfg = QUOTA_PROVIDERS[provider];
     if (!cfg) {
@@ -1444,6 +1564,7 @@ export class TokenStatsService extends TypertRemoteService {
     }
     const { apiKey, apiKeyRef, cookie, cookieRef } = await this._quotaApiKey(provider);
     if (provider === "mimo") return this._fetchMimoQuota(apiKey, apiKeyRef, cookie, cookieRef);
+    if (provider === "bailian") return this._fetchBailianQuota();
     if (!apiKey) {
       return {
         ok: false,
@@ -1641,13 +1762,259 @@ export class TokenStatsService extends TypertRemoteService {
     };
   }
 
+  // ---- 百炼 Token Plan（阿里云百炼个人版）-----------------------------------
+  //
+  // 链路（官方 CLI modelstudioai/cli 契约，KS-OTO/tracking-llm-plan-usage 实测）：
+  //   AK/SK --ACS3签名--> GenerateCLIAccessToken --> cliAccessToken（短期）
+  //   cliAccessToken --Bearer--> /cli/api.json 网关 --> personal usage/subscription/addon
+  // 模型 key（sk-sp-）只授权推理；浏览器 /data/api.json 网关只认 Cookie——
+  // 本通道免 Cookie、AK/SK 长期有效、NotLogined 自动重换，无 mimo 式过期痛点。
+
+  /** 读一个凭据 ref：credentials 优先，env 回退（与 _quotaApiKey 同规则）。 */
+  async _resolveCredRefValue(ref) {
+    try {
+      const credentials = this.ctx.get("credentials");
+      if (credentials && typeof credentials.resolve === "function") {
+        const hit = await credentials.resolve(ref);
+        if (hit && hit.value) return hit.value;
+      }
+    } catch (e) { /* credentials 抛错继续走 env */ }
+    if (typeof process !== "undefined" && process.env && process.env[ref]) {
+      return process.env[ref];
+    }
+    return null;
+  }
+
+  /** 解析 AK/SK 对（+可选 STS）。 */
+  async _bailianAkSk() {
+    const accessKeyId = await this._resolveCredRefValue("ALIBABA_CLOUD_ACCESS_KEY_ID");
+    const accessKeySecret = await this._resolveCredRefValue("ALIBABA_CLOUD_ACCESS_KEY_SECRET");
+    const securityToken = await this._resolveCredRefValue("ALIBABA_CLOUD_SECURITY_TOKEN");
+    return { accessKeyId, accessKeySecret, securityToken: securityToken || undefined };
+  }
+
+  /** 从 llm 服务探测已配置的 qwen token plan / 百炼 Token Plan 路由，派生 region/site。
+   *  只认「已声明或已注册」的路由（目录全集里未配置的不算）；按量付费的普通
+   *  bailian/dashscope 路由不匹配（必须有 token-plan maas 地址或 token-plan/tpp 命名）。 */
+  _bailianModelRoutes() {
+    const out = [];
+    try {
+      const llm = this.ctx.get("llm");
+      if (!llm) return out;
+      let registered = [];
+      try {
+        if (typeof llm.listProviders === "function") registered = llm.listProviders() || [];
+      } catch (e) { /* 形状漂移：忽略 */ }
+      const regIds = new Set(registered.map((p) => p && p.id).filter(Boolean));
+      let entries = [];
+      try {
+        if (typeof llm.listConfigurableProviders === "function") entries = llm.listConfigurableProviders() || [];
+      } catch (e) { /* 形状漂移：忽略 */ }
+      for (const e of entries) {
+        if (!e || typeof e.provider !== "string") continue;
+        const id = e.provider;
+        const url = String(e.defaultBaseURL || "");
+        const urlMatch = /token-plan\.[a-z0-9-]+\.maas\.aliyuncs\.com/i.test(url);
+        const idMatch = /qwen-token-plan/i.test(id) || (/bailian/i.test(id) && /token-plan|tpp/i.test(id));
+        if (!urlMatch && !idMatch) continue;
+        if (!(e.declared === true || regIds.has(id))) continue;
+        let region = "cn-beijing";
+        const m = url.match(/token-plan\.([a-z0-9-]+)\.maas\.aliyuncs\.com/i);
+        if (m && BAILIAN_REGIONS[m[1]]) region = m[1];
+        const site = region === "cn-beijing" ? "domestic" : "international";
+        const keyRefs = e.nativeAuth && Array.isArray(e.nativeAuth.env) ? e.nativeAuth.env : [];
+        out.push({ provider: id, displayName: String(e.displayName || id), region, site, keyRefs });
+      }
+    } catch (e) { /* llm 不可用：getBailianSetup 退化为 key ref 探测 */ }
+    return out;
+  }
+
+  /** AK/SK → cliAccessToken（内存缓存 TTL 10min 削峰；force=true 强制重换）。 */
+  async _bailianToken(cred, region, force) {
+    const key = cred.accessKeyId + "@" + region;
+    const c = this._bailianTokenCache[key];
+    if (!force && c && c.expiresAt > Date.now()) return { ok: true, token: c.token };
+    const req = buildTokenRequest({
+      accessKeyId: cred.accessKeyId,
+      accessKeySecret: cred.accessKeySecret,
+      securityToken: cred.securityToken,
+      region,
+    });
+    const res = await this._httpPost(req.url, req.headers, req.body);
+    if (res.error) return { ok: false, kind: "network", message: res.error };
+    const parsed = parseTokenResponse(res.status, res.body);
+    if (!parsed.ok) return parsed;
+    this._bailianTokenCache[key] = { token: parsed.token, expiresAt: Date.now() + BAILIAN_TOKEN_TTL_MS };
+    return { ok: true, token: parsed.token };
+  }
+
+  /** 订阅/加购包辅助数据（subscription 解析成功才 24h 低频；缺失只短缓存 5min 自愈；
+   *  force 刷新会整体丢弃本缓存）。 */
+  async _bailianAux(region, site, token) {
+    const c = this._bailianAuxCache;
+    if (c && c.expiresAt > Date.now()) return c;
+    const fetchOne = async (api) => {
+      try {
+        const req = buildGatewayRequest({ region, site, api, data: {}, token });
+        const res = await this._httpPost(req.url, req.headers, req.body);
+        if (res.error) return null;
+        const parsed = parseGatewayResponse(res.status, res.body);
+        return parsed.ok ? parsed.payload : null;
+      } catch (e) {
+        return null;
+      }
+    };
+    const [subPayload, addonPayload] = await Promise.all([
+      fetchOne(BAILIAN_SUBSCRIPTION_API),
+      fetchOne(BAILIAN_ADDON_API),
+    ]);
+    const subscription = parseSubscriptionPayload(subPayload);
+    const addon = parseAddonPayload(addonPayload);
+    const entry = {
+      subscription,
+      addon,
+      // 只有 subscription 解析成功才长缓存：「半成功」（usage 已生效但 subscription
+      // 仍 NotAuthorised 的策略传播分钟级窗口）若给 24h，会把套餐信息行锁缺一天
+      // （v1.11.0 实测踩坑）。subscription 缺失只短缓存 5min 自愈。
+      expiresAt: Date.now() + (subscription ? BAILIAN_AUX_TTL_MS : 5 * 60 * 1000),
+    };
+    this._bailianAuxCache = entry;
+    return entry;
+  }
+
+  /** 百炼个人版配额主读数：usage 必需，NotLogined 重换 token 重试一次（官方同款）。 */
+  async _fetchBailianQuota() {
+    const provider = "bailian";
+    const cred = await this._bailianAkSk();
+    if (!cred.accessKeyId || !cred.accessKeySecret) {
+      return {
+        ok: false,
+        provider,
+        kind: "unconfigured",
+        message: "百炼 Token Plan 用量需要阿里云 AK/SK（设置页 Token 统计 → 百炼 Token Plan 凭据；模型 key sk-sp- 查不了配额）",
+      };
+    }
+    const routes = this._bailianModelRoutes();
+    const region = routes.length > 0 ? routes[0].region : "cn-beijing";
+    const site = routes.length > 0 ? routes[0].site : "domestic";
+    const tok = await this._bailianToken(cred, region, false);
+    if (!tok.ok) return { ...tok, provider };
+    const callUsage = async (token) => {
+      const req = buildGatewayRequest({ region, site, api: BAILIAN_USAGE_API, data: {}, token });
+      const res = await this._httpPost(req.url, req.headers, req.body);
+      if (res.error) return { ok: false, kind: "network", message: res.error };
+      return parseGatewayResponse(res.status, res.body);
+    };
+    let usage = await callUsage(tok.token);
+    if (!usage.ok && usage.notLogined) {
+      const refreshed = await this._bailianToken(cred, region, true);
+      if (!refreshed.ok) return { ...refreshed, provider };
+      usage = await callUsage(refreshed.token);
+    }
+    if (!usage.ok) return { ...usage, provider };
+    const windows = discoverWindows(usage.payload);
+    if (windows.length === 0) {
+      return {
+        ok: false,
+        provider,
+        kind: "parse",
+        message: "用量响应没有配额窗口字段（per*Percentage）——订阅可能未生效或接口契约变化",
+      };
+    }
+    const aux = await this._bailianAux(region, site, tok.token);
+    const display = bailianDisplay({ windows, subscription: aux.subscription, addon: aux.addon });
+    return { ok: true, provider, display };
+  }
+
+  /** 设置页门控 + 凭据状态。**modelConfigured = 任一 qwen token plan 模型 key
+   *  可解析**（key 由 DSH 模型设置写入，命中即代表配置了模型）；llm 服务可用时
+   *  额外收集路由派生 region/site 与自定义 ref。返回值绝不包含密钥明文。 */
+  async getBailianSetup() {
+    try {
+      const routes = this._bailianModelRoutes();
+      const cred = await this._bailianAkSk();
+      const akConfigured = !!(cred.accessKeyId && cred.accessKeySecret);
+      const refSet = new Set(["QWEN_TOKEN_PLAN_CN_API_KEY", "QWEN_TOKEN_PLAN_API_KEY"]);
+      for (const r of routes) for (const ref of r.keyRefs || []) refSet.add(ref);
+      let modelConfigured = false;
+      for (const ref of refSet) {
+        if (await this._resolveCredRefValue(ref)) {
+          modelConfigured = true;
+          break;
+        }
+      }
+      const region = routes.length > 0 ? routes[0].region : "cn-beijing";
+      const site = routes.length > 0 ? routes[0].site : "domestic";
+      return {
+        ok: true,
+        value: {
+          modelConfigured,
+          akConfigured,
+          maskedAk: akConfigured ? maskAk(cred.accessKeyId) : null,
+          region,
+          site,
+          routes: routes.map((r) => r.provider),
+        },
+      };
+    } catch (e) {
+      return { ok: false, error: { code: "setup-failed", message: String((e && e.message) || e) } };
+    }
+  }
+
+  /** 保存 AK/SK 到官方凭据库（绝不回显 Secret），并清空百炼相关缓存。 */
+  async saveBailianCredentials(input) {
+    try {
+      const ak = input && typeof input.accessKeyId === "string" ? input.accessKeyId.trim() : "";
+      const sk = input && typeof input.accessKeySecret === "string" ? input.accessKeySecret.trim() : "";
+      if (!ak || !sk) {
+        return { ok: false, error: { code: "invalid-input", message: "AccessKey ID 与 AccessKey Secret 都不能为空" } };
+      }
+      const credentials = this.ctx.get("credentials");
+      if (!credentials || typeof credentials.set !== "function") {
+        return {
+          ok: false,
+          error: { code: "credentials-unavailable", message: "凭据服务不可用，无法保存；可改用环境变量 ALIBABA_CLOUD_ACCESS_KEY_ID / ALIBABA_CLOUD_ACCESS_KEY_SECRET" },
+        };
+      }
+      await credentials.set("ALIBABA_CLOUD_ACCESS_KEY_ID", ak);
+      await credentials.set("ALIBABA_CLOUD_ACCESS_KEY_SECRET", sk);
+      this._bailianTokenCache = Object.create(null);
+      this._bailianAuxCache = null;
+      this._quotaCache.bailian = null;
+      return { ok: true, value: { saved: true, maskedAk: maskAk(ak) } };
+    } catch (e) {
+      return { ok: false, error: { code: "save-failed", message: String((e && e.message) || e) } };
+    }
+  }
+
+  /** 清除凭据库里的 AK/SK（env 配置的不受影响）并清缓存。 */
+  async clearBailianCredentials() {
+    try {
+      const credentials = this.ctx.get("credentials");
+      if (credentials && typeof credentials.unset === "function") {
+        await credentials.unset("ALIBABA_CLOUD_ACCESS_KEY_ID");
+        await credentials.unset("ALIBABA_CLOUD_ACCESS_KEY_SECRET");
+      }
+      this._bailianTokenCache = Object.create(null);
+      this._bailianAuxCache = null;
+      this._quotaCache.bailian = null;
+      return { ok: true, value: { cleared: true } };
+    } catch (e) {
+      return { ok: false, error: { code: "clear-failed", message: String((e && e.message) || e) } };
+    }
+  }
+
   /**
    * Cached per-provider quota read. Success caches for 30 s; failures cache
    * with exponential backoff (5 s → 30 min cap) so a broken provider is not
    * hammered. `force` drops the cached entry before reading (手动刷新).
    */
   async _getQuotaCached(provider, force) {
-    if (force) this._quotaCache[provider] = null;
+    if (force) {
+      this._quotaCache[provider] = null;
+      // 手动刷新 = 全量：百炼辅助缓存（subscription/addon）一并丢弃。
+      if (provider === "bailian") this._bailianAuxCache = null;
+    }
     const c = this._quotaCache[provider];
     if (c && c.expiresAt > Date.now()) return c.value;
     const value = quotaWireValue(await this._fetchProviderQuota(provider));

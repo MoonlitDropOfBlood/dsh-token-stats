@@ -107,6 +107,7 @@ jobs:
             - 数据来源为 DSH 会话日志（`assistant/message` 的 usage），按天/按模型聚合，历史自动回填。
             - 设置导航图标：DSH 0.2.2-rc.1+ 走官方 `settings.section.icon` 槽贡献自定义图标，同时兼容旧外壳（修复升级后「自定义图标 + 核心齿轮」双图标）。
             - 🆕 OpenCode Go 套餐用量：走官方 `opencode.ai/zen/go/v1/usage` 接口，显示 5h / 7d / 30d 三个窗口的已用百分比；未配置 API Key 时与其他 provider 同规则（不显示）。
+            - 🆕 阿里云百炼 Token Plan（个人版）：AK/SK 纯 HTTP 通道（ACS3 签名换 CLI access token → 控制台网关），免 Cookie、自动续期；设置页新增「百炼 Token Plan 凭据」卡片（仅在已配置 qwen token plan 模型时出现），可保存/更换/清除 RAM AK/SK；显示订阅月已用百分比、重置倒计时、套餐剩余天数与加购包余额。附 `npm run fix:bailian-workspace` 修复 RAM 子账号「未加入业务空间」导致的 NotAuthorised。
 
             ### 📦 安装（标准 DSH bundle）
             ```bash

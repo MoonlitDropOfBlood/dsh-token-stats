@@ -82,6 +82,23 @@ window.__ModuleLoader__.load({
 .ts-quota-card-value{font-size:18px;font-weight:600;line-height:26px;font-variant-numeric:tabular-nums}
 .ts-quota-card-bar{height:4px;border-radius:2px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}
 .ts-quota-card-bar i{display:block;height:100%;border-radius:2px;background:var(--dsw-alias-state-business-primary,var(--dsh-accent,#4D6BFE))}
+.ts-bailian-setup{display:flex;flex-direction:column;gap:8px}
+.ts-bailian-note{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.ts-bailian-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;line-height:20px}
+.ts-bailian-row b{font-weight:600;font-variant-numeric:tabular-nums}
+.ts-bailian-region{color:var(--dsw-alias-label-secondary);font-size:11px}
+.ts-bailian-form{display:flex;flex-direction:column;gap:6px}
+.ts-bailian-input{box-sizing:border-box;height:30px;font:inherit;font-size:12px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);outline:none;width:100%}
+.ts-bailian-input:focus{border-color:var(--dsw-alias-state-business-primary,var(--dsh-accent,#4D6BFE))}
+.ts-bailian-actions{display:flex;gap:6px;align-items:center}
+.ts-bailian-btn{box-sizing:border-box;height:28px;font:inherit;cursor:pointer;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:transparent;color:var(--dsw-alias-label-secondary);padding:0 12px;font-size:12px;line-height:26px}
+.ts-bailian-btn:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}
+.ts-bailian-btn:disabled{opacity:.5;cursor:default}
+.ts-bailian-primary{background:var(--dsw-alias-state-business-primary,var(--dsh-accent,#4D6BFE));border-color:transparent;color:var(--dsw-alias-label-on-color,#fff)}
+.ts-bailian-primary:hover{color:var(--dsw-alias-label-on-color,#fff);opacity:.9}
+.ts-bailian-danger{color:var(--dsw-alias-state-error-primary,#e5534b)}
+.ts-bailian-ok{color:var(--dsw-alias-state-success-primary);font-size:12px;line-height:18px}
+.ts-bailian-err{color:var(--dsw-alias-state-error-primary,#e5534b);font-size:12px;line-height:18px;word-break:break-all}
 .ts-heat-0{fill:var(--dsw-alias-bg-layer-2);fill:color-mix(in srgb,var(--dsw-alias-border-l1) 45%,transparent);background:var(--dsw-alias-bg-layer-2);background:color-mix(in srgb,var(--dsw-alias-border-l1) 45%,transparent)}
 .ts-heat-1{fill:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-primary);opacity:0.3}
 .ts-heat-2{fill:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-primary);opacity:0.5}
@@ -266,6 +283,55 @@ window.__ModuleLoader__.load({
           result: {
             mode: "strict",
             typeSymbol: "dsh-token-stats#TokenStatsAllQuotasResult",
+            schema: passthrough(),
+            create: createPassthrough,
+          },
+        },
+        {
+          id: "dsh-token-stats#tokenStats/getBailianSetup",
+          service: "tokenStats",
+          namespace: "tokenStats",
+          method: "getBailianSetup",
+          invocation: { kind: "direct" },
+          parameters: [],
+          result: {
+            mode: "strict",
+            typeSymbol: "dsh-token-stats#TokenStatsBailianSetupResult",
+            schema: passthrough(),
+            create: createPassthrough,
+          },
+        },
+        {
+          id: "dsh-token-stats#tokenStats/saveBailianCredentials",
+          service: "tokenStats",
+          namespace: "tokenStats",
+          method: "saveBailianCredentials",
+          invocation: { kind: "direct" },
+          parameters: [
+            {
+              name: "input",
+              wire: "input",
+              source: "json",
+              codec: { mode: "strict", typeSymbol: "dsh-token-stats#tokenStats/saveBailianCredentials:input", schema: passthrough(), create: createPassthrough },
+            },
+          ],
+          result: {
+            mode: "strict",
+            typeSymbol: "dsh-token-stats#TokenStatsBailianSaveResult",
+            schema: passthrough(),
+            create: createPassthrough,
+          },
+        },
+        {
+          id: "dsh-token-stats#tokenStats/clearBailianCredentials",
+          service: "tokenStats",
+          namespace: "tokenStats",
+          method: "clearBailianCredentials",
+          invocation: { kind: "direct" },
+          parameters: [],
+          result: {
+            mode: "strict",
+            typeSymbol: "dsh-token-stats#TokenStatsBailianClearResult",
             schema: passthrough(),
             create: createPassthrough,
           },
@@ -719,8 +785,12 @@ window.__ModuleLoader__.load({
         // OpenCode Go：DSH 目录里的 route id 是 opencode / opencode-go。
         "opencode-go": "opencode",
         "opencode": "opencode",
+        // 阿里云百炼 Token Plan：DSH pi-ai 目录 route id（个人版 CN / 国际）。
+        "qwen-token-plan-cn": "bailian",
+        "qwen-token-plan": "bailian",
+        "qwen-token-plan-individual": "bailian",
       };
-      /** route id → 内部 key：精确查表未命中时对 mimo / opencode 做包含回退（route id 用户自由命名，如 xiaomi-token-plan-cn）。 */
+      /** route id → 内部 key：精确查表未命中时对 mimo / opencode / bailian 做包含回退（route id 用户自由命名，如 xiaomi-token-plan-cn / bailian-tpp）。 */
       function providerKeyForRoute(route) {
         if (!route) return null;
         const exact = PROVIDER_ALIASES[route];
@@ -728,12 +798,15 @@ window.__ModuleLoader__.load({
         const lower = String(route).toLowerCase();
         if (lower.includes("mimo") || lower.includes("xiaomi")) return "mimo";
         if (lower.includes("opencode")) return "opencode";
+        // 注意：按量付费的普通 "bailian"/dashscope 路由不匹配（没有套餐配额），
+        // 只认 qwen-token-plan / bailian-tpp / bailian-token 这类 Token Plan 命名。
+        if (lower.includes("qwen-token-plan") || lower.includes("bailian-tpp") || lower.includes("bailian-token")) return "bailian";
         return null;
       }
       // v1.8.0 起不再有凭据输入行：其他 provider 的 key 在 DSH 模型设置里配，
       // mimo 的 Cookie（XIAOMI_MIMO_COOKIE）没有 UI 入口，只认环境变量（host 侧
       // 凭据库未命中也会回退 process.env）——没配就是 unconfigured，与大家同规则。
-      const QUOTA_PROVIDER_ORDER = ["minimax", "deepseek", "kimi", "openrouter", "zhipu", "mimo", "opencode"];
+      const QUOTA_PROVIDER_ORDER = ["minimax", "deepseek", "kimi", "openrouter", "zhipu", "mimo", "opencode", "bailian"];
 
       function quotaProviderLabel(p) {
         if (p === "minimax") return "MiniMax";
@@ -743,6 +816,7 @@ window.__ModuleLoader__.load({
         if (p === "zhipu") return "Zhipu";
         if (p === "mimo") return "MiMo";
         if (p === "opencode") return "OpenCode Go";
+        if (p === "bailian") return "百炼 Token Plan";
         return p;
       }
 
@@ -796,6 +870,19 @@ window.__ModuleLoader__.load({
             cell("30d", d.monthlyPct, "30"),
           ];
         }
+        if (provider === "bailian") {
+          // 百炼个人版：订阅月窗口（官方 2026-08/09 先后取消 5h/周限额）；
+          // balanceText 承载套餐/加购包信息，行内只取前半段。
+          const parts = [labelEl];
+          if (typeof d.monthlyPct === "number") {
+            parts.push(React.createElement("span", { key: "m", style: strong }, "月 " + d.monthlyPct + "%"));
+          } else if (typeof d.balanceText === "string" && d.balanceText) {
+            parts.push(React.createElement("span", { key: "b", style: strong }, d.balanceText.split(" · ")[0]));
+          } else {
+            parts.push(React.createElement("span", { key: "na", style: strong }, "—"));
+          }
+          return parts;
+        }
         // minimax / kimi / zhipu: 5h + 7d 双窗口套餐
         const five = typeof d.fiveHrPct === "number" ? d.fiveHrPct + "%" : "—";
         const week = typeof d.weeklyPct === "number" ? d.weeklyPct + "%" : "—";
@@ -829,7 +916,9 @@ window.__ModuleLoader__.load({
                 ? (typeof d.weeklyPct === "number" || typeof d.fiveHrPct === "number"
                   ? "官方剩余用量"
                   : "本地用量")
-                : "账户余额" + (d.currency ? " (" + d.currency + ")" : "");
+                : props.provider === "bailian"
+                  ? (String(d.balanceText).indexOf("加购包") === 0 ? "加购包" : "套餐信息")
+                  : "账户余额" + (d.currency ? " (" + d.currency + ")" : "");
             rows.push(
               React.createElement(
                 "div", { key: "bal", className: "ts-quota-pop-row" },
@@ -855,6 +944,12 @@ window.__ModuleLoader__.load({
                 windows.push([windows.length > 0 ? "本月" : "Token Plan", d.weeklyPct, d.weeklyResetsIn]);
               }
             }
+          } else if (props.provider === "bailian") {
+            // 百炼个人版当前只有订阅月窗口；legacy 5h/周字段若回归则自动恢复展示。
+            windows = [];
+            if (typeof d.fiveHrPct === "number") windows.push(["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn]);
+            if (typeof d.weeklyPct === "number") windows.push(["7d 窗口", d.weeklyPct, d.weeklyResetsIn]);
+            if (typeof d.monthlyPct === "number") windows.push(["订阅月", d.monthlyPct, d.monthlyResetsIn]);
           } else {
             windows = [
               ["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn],
@@ -1078,7 +1173,9 @@ window.__ModuleLoader__.load({
           // 官方「剩余 X%」（有 weeklyPct），所以标题不能写死「账户余额」。
           const head = p === "mimo"
             ? ((typeof d.weeklyPct === "number" || typeof d.fiveHrPct === "number") ? "Token Plan" : "本地用量")
-            : "账户余额" + (d.currency ? " · " + d.currency : "");
+            : p === "bailian"
+              ? (String(d.balanceText).indexOf("加购包") === 0 ? "加购包" : "套餐信息")
+              : "账户余额" + (d.currency ? " · " + d.currency : "");
           // 官方读数（新端点）把单一窗口放在 weeklyPct：数值下面补进度条 + 重置时间，
           // 与其它 provider 的窗口卡片及悬浮窗对齐。
           const planWindow = p === "mimo" && typeof d.weeklyPct === "number"
@@ -1094,7 +1191,20 @@ window.__ModuleLoader__.load({
                   React.createElement("i", { style: { width: Math.max(0, Math.min(100, d.weeklyPct)) + "%" } }),
                 ),
               )
-            : null;
+            : p === "bailian" && typeof d.monthlyPct === "number"
+              ? React.createElement(
+                  "div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
+                  React.createElement(
+                    "div", { className: "ts-quota-pop-row" },
+                    React.createElement("span", null, "订阅月已用"),
+                    React.createElement("b", null, d.monthlyPct + "%" + (d.monthlyResetsIn ? " · " + d.monthlyResetsIn : "")),
+                  ),
+                  React.createElement(
+                    "div", { className: "ts-quota-card-bar" },
+                    React.createElement("i", { style: { width: Math.max(0, Math.min(100, d.monthlyPct)) + "%" } }),
+                  ),
+                )
+              : null;
           return React.createElement(
             "div", { className: "ts-card ts-quota-card" },
             React.createElement(
@@ -1112,12 +1222,19 @@ window.__ModuleLoader__.load({
                 ["套餐", d.fiveHrPct, d.fiveHrResetsIn],
                 ["本月总额度", d.weeklyPct, d.weeklyResetsIn],
               ]
-            : [
-                ["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn],
-                ["7d 窗口", d.weeklyPct, d.weeklyResetsIn],
-                // OpenCode Go 的月度额度窗口（其余 provider 为 null → 不渲染）。
-                ...(p === "opencode" ? [["30d 窗口", d.monthlyPct, d.monthlyResetsIn]] : []),
-              ];
+            : p === "bailian"
+              ? [
+                  ["订阅月", d.monthlyPct, d.monthlyResetsIn],
+                  // legacy 窗口字段若回归则自动恢复展示（官方 2026-08/09 已取消）。
+                  ...(typeof d.fiveHrPct === "number" ? [["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn]] : []),
+                  ...(typeof d.weeklyPct === "number" ? [["7d 窗口", d.weeklyPct, d.weeklyResetsIn]] : []),
+                ]
+              : [
+                  ["5h 窗口", d.fiveHrPct, d.fiveHrResetsIn],
+                  ["7d 窗口", d.weeklyPct, d.weeklyResetsIn],
+                  // OpenCode Go 的月度额度窗口（其余 provider 为 null → 不渲染）。
+                  ...(p === "opencode" ? [["30d 窗口", d.monthlyPct, d.monthlyResetsIn]] : []),
+                ];
         return React.createElement(
           "div", { className: "ts-card ts-quota-card" },
           React.createElement(
@@ -1144,6 +1261,136 @@ window.__ModuleLoader__.load({
         );
       }
 
+      /** 百炼 Token Plan 凭据配置卡片。
+       *  **门控：仅当配置了 qwen token plan 模型时显示**（host getBailianSetup
+       *  的 modelConfigured = 任一 qwen token plan 模型 key 可解析）。
+       *  AK/SK 经 saveBailianCredentials 写入 DSH 官方凭据库（host 侧绝不回显
+       *  Secret）；保存/清除后广播事件让 QuotaSection 立即强刷。 */
+      function BailianSetupCard() {
+        const [setup, setSetup] = React.useState(null);
+        const [editing, setEditing] = React.useState(false);
+        const [ak, setAk] = React.useState("");
+        const [sk, setSk] = React.useState("");
+        const [busy, setBusy] = React.useState(false);
+        const [msg, setMsg] = React.useState(null);
+        const load = React.useCallback(async () => {
+          try {
+            const payload = unwrapRemote(await remote.getBailianSetup());
+            if (payload && typeof payload === "object" && typeof payload.modelConfigured === "boolean") {
+              setSetup(payload);
+            }
+          } catch (e) { /* 门控查询失败不占位 */ }
+        }, []);
+        React.useEffect(() => {
+          load();
+        }, [load]);
+        // 门控：未配置 qwen token plan 模型 → 完全不渲染。
+        if (!setup || !setup.modelConfigured) return null;
+
+        const notifyQuotas = () => {
+          try {
+            window.dispatchEvent(new CustomEvent("ts-bailian-credentials-changed"));
+          } catch (e) { /* 旧浏览器无 CustomEvent：60s 轮询兜底 */ }
+        };
+        const save = async () => {
+          if (!ak.trim() || !sk.trim()) {
+            setMsg({ kind: "err", text: "AccessKey ID 与 AccessKey Secret 都不能为空" });
+            return;
+          }
+          setBusy(true);
+          setMsg(null);
+          try {
+            const payload = unwrapRemote(await remote.saveBailianCredentials({ accessKeyId: ak.trim(), accessKeySecret: sk.trim() }));
+            if (payload && payload.saved === true) {
+              setMsg({ kind: "ok", text: "已保存（" + (payload.maskedAk || "****") + "），用量读数稍后自动刷新" });
+              setAk("");
+              setSk("");
+              setEditing(false);
+              await load();
+              notifyQuotas();
+            } else {
+              setMsg({ kind: "err", text: (payload && payload.message) || "保存失败" });
+            }
+          } catch (e) {
+            setMsg({ kind: "err", text: String((e && e.message) || e) });
+          }
+          setBusy(false);
+        };
+        const clear = async () => {
+          setBusy(true);
+          setMsg(null);
+          try {
+            const payload = unwrapRemote(await remote.clearBailianCredentials());
+            if (payload && payload.cleared === true) {
+              setMsg({ kind: "ok", text: "已清除凭据库中的 AK/SK（环境变量配置的不受影响）" });
+              setEditing(false);
+              await load();
+              notifyQuotas();
+            } else {
+              setMsg({ kind: "err", text: (payload && payload.message) || "清除失败" });
+            }
+          } catch (e) {
+            setMsg({ kind: "err", text: String((e && e.message) || e) });
+          }
+          setBusy(false);
+        };
+
+        const regionText = setup.region === "cn-beijing" ? "华北2（北京）· 国内站" : "新加坡 · 国际站";
+        return React.createElement(
+          "div", { className: "ts-block" },
+          React.createElement("div", { className: "ts-block-title" }, "百炼 Token Plan 凭据"),
+          React.createElement(
+            "div", { className: "ts-card ts-bailian-setup" },
+            React.createElement(
+              "div", { className: "ts-bailian-note" },
+              "套餐用量查询走百炼控制台网关，模型 API Key（sk-sp-）查不了配额。需要阿里云 RAM AccessKey：授权 modelstudio:GenerateCLIAccessToken + AliyunTokenPlanReadOnlyAccess，RAM 用户还需加入百炼业务空间。AK/SK 存入 DSH 官方凭据库，仅发往阿里云官方端点，自动续期免 Cookie。",
+            ),
+            setup.akConfigured && !editing
+              ? React.createElement(
+                  "div", { className: "ts-bailian-row" },
+                  React.createElement("span", null, "已配置"),
+                  React.createElement("b", null, setup.maskedAk || "****"),
+                  React.createElement("span", { className: "ts-bailian-region" }, regionText),
+                  React.createElement("button", { className: "ts-bailian-btn", onClick: () => { setEditing(true); setMsg(null); }, disabled: busy }, "更换"),
+                  React.createElement("button", { className: "ts-bailian-btn ts-bailian-danger", onClick: clear, disabled: busy }, "清除"),
+                )
+              : null,
+            !setup.akConfigured || editing
+              ? React.createElement(
+                  "div", { className: "ts-bailian-form" },
+                  React.createElement("input", {
+                    className: "ts-bailian-input",
+                    type: "text",
+                    placeholder: "AccessKey ID（LTAI…）",
+                    value: ak,
+                    onChange: (e) => setAk(e.target.value),
+                    autoComplete: "off",
+                    spellCheck: false,
+                  }),
+                  React.createElement("input", {
+                    className: "ts-bailian-input",
+                    type: "password",
+                    placeholder: "AccessKey Secret",
+                    value: sk,
+                    onChange: (e) => setSk(e.target.value),
+                    autoComplete: "new-password",
+                  }),
+                  React.createElement(
+                    "div", { className: "ts-bailian-actions" },
+                    React.createElement("button", { className: "ts-bailian-btn ts-bailian-primary", onClick: save, disabled: busy }, busy ? "保存中…" : "保存"),
+                    editing
+                      ? React.createElement("button", { className: "ts-bailian-btn", onClick: () => { setEditing(false); setAk(""); setSk(""); setMsg(null); }, disabled: busy }, "取消")
+                      : null,
+                  ),
+                )
+              : null,
+            msg
+              ? React.createElement("div", { className: msg.kind === "ok" ? "ts-bailian-ok" : "ts-bailian-err" }, msg.text)
+              : null,
+          ),
+        );
+      }
+
       function QuotaSection() {
         const [quotas, setQuotas] = React.useState(null);
         const load = React.useCallback(async (force) => {
@@ -1157,7 +1404,13 @@ window.__ModuleLoader__.load({
         React.useEffect(() => {
           load(false);
           const t = setInterval(() => load(false), QUOTA_REFRESH_MS);
-          return () => clearInterval(t);
+          // 百炼凭据保存/清除后立即强刷（不用等 60s 轮询）。
+          const onChanged = () => load(true);
+          window.addEventListener("ts-bailian-credentials-changed", onChanged);
+          return () => {
+            clearInterval(t);
+            window.removeEventListener("ts-bailian-credentials-changed", onChanged);
+          };
         }, [load]);
 
         if (!quotas) return null;
@@ -1300,6 +1553,7 @@ window.__ModuleLoader__.load({
               "div", { className: "ts-body" },
               React.createElement(SummaryCards, { sum: range.sum }),
               React.createElement(QuotaSection, null),
+              React.createElement(BailianSetupCard, null),
               React.createElement(
                 "div", { className: "ts-block" },
                 React.createElement("div", { className: "ts-block-title" }, "每日消耗 · 按模型"),

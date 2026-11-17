@@ -175,6 +175,107 @@ const tokenStatsAllQuotasResultSchema = z.union([
 
 const createTokenStatsAllQuotasResult = () => tokenStatsAllQuotasResultSchema;
 
+// ---- bailian setup / credentials (百炼 Token Plan 凭据配置) ------------------
+// 设置页「百炼 Token Plan 凭据」卡片：门控（配置了 qwen token plan 模型才显示）
+// + AK/SK 保存/清除。返回值只含掩码，绝不出现密钥明文。
+
+const bailianSetupValueSchema = z
+  .object({
+    modelConfigured: z.boolean(),
+    akConfigured: z.boolean(),
+    maskedAk: z.union([z.string(), z.null()]),
+    region: z.string(),
+    site: z.string(),
+    routes: z.array(z.string()).readonly(),
+  })
+  .readonly();
+
+const tokenStatsBailianSetupResultSchema = z.union([
+  z
+    .object({
+      ok: z.literal(true).readonly(),
+      value: bailianSetupValueSchema,
+    })
+    .readonly(),
+  z
+    .object({
+      ok: z.literal(false).readonly(),
+      error: z
+        .object({
+          code: z.string().readonly(),
+          message: z.string().readonly().optional(),
+        })
+        .readonly(),
+    })
+    .readonly(),
+]);
+
+const createTokenStatsBailianSetupResult = () => tokenStatsBailianSetupResultSchema;
+
+const bailianCredentialsInputSchema = z.object({
+  accessKeyId: z.string(),
+  accessKeySecret: z.string(),
+});
+
+const createBailianCredentialsInput = () => bailianCredentialsInputSchema;
+
+const bailianSaveValueSchema = z
+  .object({
+    saved: z.boolean(),
+    maskedAk: z.string(),
+  })
+  .readonly();
+
+const tokenStatsBailianSaveResultSchema = z.union([
+  z
+    .object({
+      ok: z.literal(true).readonly(),
+      value: bailianSaveValueSchema,
+    })
+    .readonly(),
+  z
+    .object({
+      ok: z.literal(false).readonly(),
+      error: z
+        .object({
+          code: z.string().readonly(),
+          message: z.string().readonly().optional(),
+        })
+        .readonly(),
+    })
+    .readonly(),
+]);
+
+const createTokenStatsBailianSaveResult = () => tokenStatsBailianSaveResultSchema;
+
+const bailianClearValueSchema = z
+  .object({
+    cleared: z.boolean(),
+  })
+  .readonly();
+
+const tokenStatsBailianClearResultSchema = z.union([
+  z
+    .object({
+      ok: z.literal(true).readonly(),
+      value: bailianClearValueSchema,
+    })
+    .readonly(),
+  z
+    .object({
+      ok: z.literal(false).readonly(),
+      error: z
+        .object({
+          code: z.string().readonly(),
+          message: z.string().readonly().optional(),
+        })
+        .readonly(),
+    })
+    .readonly(),
+]);
+
+const createTokenStatsBailianClearResult = () => tokenStatsBailianClearResultSchema;
+
 export const TYPERT = {
   package: "@duke-dsh-plugins/dsh-token-stats",
   face: "host",
@@ -260,6 +361,63 @@ export const TYPERT = {
       },
       sourceLocation: { file: "index.js", line: 1, column: 1 },
     },
+    {
+      id: "dsh-token-stats#tokenStats/getBailianSetup",
+      service: "tokenStats",
+      namespace: "tokenStats",
+      method: "getBailianSetup",
+      invocation: { kind: "direct" },
+      parameters: [],
+      result: {
+        mode: "strict",
+        typeSymbol: "dsh-token-stats#TokenStatsBailianSetupResult",
+        schema: tokenStatsBailianSetupResultSchema,
+        create: createTokenStatsBailianSetupResult,
+      },
+      sourceLocation: { file: "index.js", line: 1, column: 1 },
+    },
+    {
+      id: "dsh-token-stats#tokenStats/saveBailianCredentials",
+      service: "tokenStats",
+      namespace: "tokenStats",
+      method: "saveBailianCredentials",
+      invocation: { kind: "direct" },
+      parameters: [
+        {
+          name: "input",
+          wire: "input",
+          source: "json",
+          codec: {
+            mode: "strict",
+            typeSymbol: "dsh-token-stats#tokenStats/saveBailianCredentials:input",
+            schema: bailianCredentialsInputSchema,
+            create: createBailianCredentialsInput,
+          },
+        },
+      ],
+      result: {
+        mode: "strict",
+        typeSymbol: "dsh-token-stats#TokenStatsBailianSaveResult",
+        schema: tokenStatsBailianSaveResultSchema,
+        create: createTokenStatsBailianSaveResult,
+      },
+      sourceLocation: { file: "index.js", line: 1, column: 1 },
+    },
+    {
+      id: "dsh-token-stats#tokenStats/clearBailianCredentials",
+      service: "tokenStats",
+      namespace: "tokenStats",
+      method: "clearBailianCredentials",
+      invocation: { kind: "direct" },
+      parameters: [],
+      result: {
+        mode: "strict",
+        typeSymbol: "dsh-token-stats#TokenStatsBailianClearResult",
+        schema: tokenStatsBailianClearResultSchema,
+        create: createTokenStatsBailianClearResult,
+      },
+      sourceLocation: { file: "index.js", line: 1, column: 1 },
+    },
   ],
   model: {
     services: [
@@ -301,6 +459,36 @@ export const TYPERT = {
             jsDoc:
               "/**\n * Snapshot all supported providers at once; each entry is the same wire\n * value getQuota returns. `force` bypasses every provider's cache.\n * @param force - bypass the caches.\n * @returns success with the per-provider quota map.\n */",
           },
+          {
+            kind: "method",
+            name: "getBailianSetup",
+            signature:
+              "@Remote('getBailianSetup') async getBailianSetup(): Promise<TokenStatsBailianSetupResult>",
+            summary:
+              "Bailian Token Plan credential-setup state: whether a qwen token plan model is configured (gate), whether AK/SK exist, masked AK, region/site.",
+            jsDoc:
+              "/**\n * Setup state for the settings-page Bailian Token Plan credential card.\n * modelConfigured gates the card (only shown when a qwen token plan model\n * key resolves). Never returns secret material — only a masked AccessKey ID.\n * @returns success with the setup state or a business failure.\n */",
+          },
+          {
+            kind: "method",
+            name: "saveBailianCredentials",
+            signature:
+              "@Remote('saveBailianCredentials') async saveBailianCredentials(input: BailianCredentialsInput): Promise<TokenStatsBailianSaveResult>",
+            summary:
+              "Save Alibaba Cloud AK/SK into the official DSH credentials store and drop bailian caches.",
+            jsDoc:
+              "/**\n * Persist ALIBABA_CLOUD_ACCESS_KEY_ID / SECRET through the credentials\n * service (never echoed, never logged). Clears the bailian token / aux /\n * quota caches so the next read uses the new credentials.\n * @param input - AccessKey ID and Secret (trimmed, both required).\n * @returns success with a masked AK or a business failure.\n */",
+          },
+          {
+            kind: "method",
+            name: "clearBailianCredentials",
+            signature:
+              "@Remote('clearBailianCredentials') async clearBailianCredentials(): Promise<TokenStatsBailianClearResult>",
+            summary:
+              "Remove the stored Alibaba Cloud AK/SK (env-configured credentials are unaffected) and drop bailian caches.",
+            jsDoc:
+              "/**\n * Unset ALIBABA_CLOUD_ACCESS_KEY_ID / SECRET from the credentials store\n * and clear the bailian caches. Environment-variable credentials, if any,\n * keep applying as the fallback path.\n * @returns success or a business failure.\n */",
+          },
         ],
         types: [
           {
@@ -326,7 +514,7 @@ export const TYPERT = {
           {
             name: "TokenStatsQuotaDisplay",
             declaration:
-              "export interface TokenStatsQuotaDisplay {\n    readonly fiveHrPct: number | null;\n    readonly weeklyPct: number | null;\n    readonly fiveHrResetsIn: string | null;\n    readonly weeklyResetsIn: string | null;\n    readonly balanceText: string | null;\n    readonly balanceUsd: number | null;\n    readonly currency: string | null;\n}",
+              "export interface TokenStatsQuotaDisplay {\n    readonly fiveHrPct: number | null;\n    readonly weeklyPct: number | null;\n    readonly monthlyPct: number | null;\n    readonly fiveHrResetsIn: string | null;\n    readonly weeklyResetsIn: string | null;\n    readonly monthlyResetsIn: string | null;\n    readonly balanceText: string | null;\n    readonly balanceUsd: number | null;\n    readonly currency: string | null;\n}",
           },
           {
             name: "TokenStatsQuotaValue",
@@ -347,6 +535,41 @@ export const TYPERT = {
             name: "TokenStatsAllQuotasResult",
             declaration:
               "export type TokenStatsAllQuotasResult = { ok: true; value: TokenStatsAllQuotasValue } | { ok: false; error: { code: string; message?: string } };",
+          },
+          {
+            name: "BailianSetupValue",
+            declaration:
+              "export interface BailianSetupValue {\n    readonly modelConfigured: boolean;\n    readonly akConfigured: boolean;\n    readonly maskedAk: string | null;\n    readonly region: string;\n    readonly site: string;\n    readonly routes: readonly string[];\n}",
+          },
+          {
+            name: "TokenStatsBailianSetupResult",
+            declaration:
+              "export type TokenStatsBailianSetupResult = { ok: true; value: BailianSetupValue } | { ok: false; error: { code: string; message?: string } };",
+          },
+          {
+            name: "BailianCredentialsInput",
+            declaration:
+              "export interface BailianCredentialsInput {\n    accessKeyId: string;\n    accessKeySecret: string;\n}",
+          },
+          {
+            name: "BailianSaveValue",
+            declaration:
+              "export interface BailianSaveValue {\n    readonly saved: boolean;\n    readonly maskedAk: string;\n}",
+          },
+          {
+            name: "TokenStatsBailianSaveResult",
+            declaration:
+              "export type TokenStatsBailianSaveResult = { ok: true; value: BailianSaveValue } | { ok: false; error: { code: string; message?: string } };",
+          },
+          {
+            name: "BailianClearValue",
+            declaration:
+              "export interface BailianClearValue {\n    readonly cleared: boolean;\n}",
+          },
+          {
+            name: "TokenStatsBailianClearResult",
+            declaration:
+              "export type TokenStatsBailianClearResult = { ok: true; value: BailianClearValue } | { ok: false; error: { code: string; message?: string } };",
           },
         ],
       },

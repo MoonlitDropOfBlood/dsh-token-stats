@@ -27,7 +27,8 @@
 | 🗂 汇总卡片 | 区间总 Tokens / 输入(含缓存) / 输出 |
 | 💾 本地持久化 | 聚合结果落盘 `<DSH_HOME>/data/dsh-token-stats/stats.json`，冷启动只扫描新会话、秒开；删除该文件可强制全量重扫 |
 | ⏱ 自动刷新 | 页面打开期间每 30s 刷新；历史回填期间每 2s 轮询进度 |
-| 💰 套餐余额 | 输入框工具行（model 选择器左侧）内联显示当前 provider 的**余额/套餐用量**，跟随当前模型自动切换；支持 minimax / deepseek / kimi / openrouter / zhipu / mimo（小米）/ opencode-go；60s 轮询，点击立即刷新 |
+| 💰 套餐余额 | 输入框工具行（model 选择器左侧）内联显示当前 provider 的**余额/套餐用量**，跟随当前模型自动切换；支持 minimax / deepseek / kimi / openrouter / zhipu / mimo（小米）/ opencode-go / **bailian（阿里云百炼 Token Plan）**；60s 轮询，点击立即刷新 |
+| 🔑 百炼凭据配置 | 设置页「百炼 Token Plan 凭据」卡片：**仅当配置了 qwen token plan 模型时显示**；填写阿里云 RAM AK/SK 即可查套餐用量（AK/SK 自动换短期 token，免 Cookie、免手动续期） |
 | 🌗 主题适配 | 全部使用 DSH 设计 token，明暗主题自动跟随 |
 
 > 套餐余额功能参考自 [dsh-musage](https://github.com/Thedeergod666/dsh-musage)（MIT），API Key 直接复用 DSH 模型设置里已配置的凭据（`credentials` 服务），无需重复配置。
@@ -63,6 +64,7 @@ dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-sta
    - MiniMax / Kimi / 智谱 显示 `5h X% | 7d Y%`（5 小时 / 7 天窗口已用百分比，悬停查看重置时间）；
    - 小米 MiMo 与其他 provider 同规则：未配置时显示 `⚠`；配置 dashboard 登录 Cookie（环境变量 `XIAOMI_MIMO_COOKIE`，见下）后显示官方 `剩余 X%` + 周重置倒计时；Cookie 失效时自动退回本地用量统计 `今日 X · 7d Y`，不报错；
    - OpenCode Go 显示 `5h X% | 7d Y% | 30d Z%`（三个窗口的已用百分比，来自官方 `opencode.ai/zen/go/v1/usage` 接口）；
+   - 百炼 Token Plan 显示 `月 X%`（订阅月 Credits 已用百分比 + 重置倒计时；悬停看套餐/加购包信息）；
    - 切换模型时自动切换 provider；每 60s 自动刷新，**点击读数立即强制刷新**；
    - 未配置对应 API Key 或拉取失败时显示 `⚠`（悬停查看原因）；当前 provider 不在支持列表时不占位。
 
@@ -71,6 +73,14 @@ dsh plugin --profile web add https://github.com/MoonlitDropOfBlood/dsh-token-sta
 > 想要**官方剩余用量百分比**：打开 platform.xiaomimimo.com 登录后，F12 → Network 任一 `/api/v1/*` 请求 → 复制完整 `Cookie` 请求头（含 `api-platform_serviceToken` 与 `userId`）→ 设置环境变量 `XIAOMI_MIMO_COOKIE`（写入 DSH 进程环境后重启生效；凭据库里已存过该 ref 的话直接可用）。插件内置最小 cookie jar：服务端若在响应里 `Set-Cookie` 续发会话会被自动吸收并写回凭据库（跨轮询、跨重启生效）；**Cookie 彻底失效时自动静默退回本地用量统计（今日 / 近 7 天消耗），不会报错**。composer 读数按 route id 匹配（`xiaomi-mimo` / `xiaomimimo` / `xiaomi-token-plan-cn` / 名字含 xiaomi 或 mimo 均可）。
 
 > **OpenCode Go 配置**：与其他 provider 同规则——**不配置就没有读数**（composer `⚠`、设置页无卡片）。在 DSH 模型设置里给 `opencode-go` 这个 provider 填好 API Key 即可（插件读 `OPENCODE_GO_API_KEY`，同时也认 `OPENCODE_API_KEY` / `OPENCODE_GO_KEY` / `OPENCODE_ZERO_API_KEY` 这几个同义变量名）。数据来自 OpenCode 官方 JSON 接口 `GET https://opencode.ai/zen/go/v1/usage`（`Authorization: Bearer <key>`），返回 rolling / weekly / monthly 三个窗口的**已用**百分比（5 小时滚动 / 7 天 / 30 天）与重置时间。⚠️ 这个接口**只给百分比、不给金额**（社区插件显示的美元金额是按硬编码额度自己算的），所以插件只渲染百分比。
+
+> **百炼 Token Plan 配置（v1.11.0 起）**：模型 API Key（`sk-sp-` 前缀）**只授权推理、查不了配额**（实测推理网关无用量端点、浏览器控制台网关只认 Cookie）。插件走**官方 CLI 同款通道**：阿里云 RAM AK/SK → ACS3-HMAC-SHA256 签名调 `GenerateCLIAccessToken` 换短期 `cliAccessToken` → Bearer 调 `bailian-cs.console.aliyun.com/cli/api.json` 查个人版 usage/subscription/addon。**AK/SK 长期有效、token 失效自动重换，没有 Cookie 过期痛点。**
+>
+> 配置入口：**设置 → Token 统计 → 「百炼 Token Plan 凭据」卡片**（仅当 DSH 里配置了 qwen token plan 模型时显示）。RAM 用户需要：① 自定义策略 `modelstudio:GenerateCLIAccessToken`（Resource `*`）；② 系统策略 `AliyunTokenPlanReadOnlyAccess`；③ **加入百炼业务空间**（否则网关返回 `BailianGateway.Team.NotAuthorised`）。AK/SK 存入 DSH 官方凭据库（`ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET`，也支持同名环境变量回退），仅发往阿里云官方端点，界面只回显掩码。
+>
+> 读数语义：个人版按 **Credits** 计量（≠token，随模型单价/缓存/夜间折扣浮动），当前只有**订阅月**窗口（官方 2026-08/09 先后取消 5h/周限额）；`per*Percentage` 是 0-1 比值，插件 ×100 展示。加购包（用量包）余额与套餐剩余天数在悬停面板/设置卡片显示。route 匹配：`qwen-token-plan-cn` / `qwen-token-plan` / `qwen-token-plan-individual` / 名字含 `qwen-token-plan`、`bailian-tpp`、`bailian-token`（按量付费的普通 `bailian`/dashscope 路由不匹配——没有套餐配额）。
+>
+> **RAM 子账号报 `BailianGateway.Team.NotAuthorised`？** RAM 策略与百炼业务空间是两套独立权限——策略齐全后还需把 RAM 用户加入业务空间。跑 `npm run fix:bailian-workspace` 即可（官方 `bl workspace init` 的授权子集：CreateUser → ListWorkspaces → ChangeUserPermissions，用 RAM 用户自己的 AK/SK，**不含后付费开通等计费操作**）；或在百炼控制台成员管理里手动添加该 RAM 用户。
 
 ## 工作原理
 
@@ -99,10 +109,12 @@ TokenStatsService.getQuota()   ← ctx.remote.tokenStats.getQuota(provider, forc
 
 ```
 dsh-token-stats/
-├── index.js            # Host 半：TokenStatsService（Remote 服务，采集 + 回填）
+├── index.js            # Host 半：TokenStatsService（Remote 服务，采集 + 回填 + 配额）
+├── bailian-quota.js    # 百炼 Token Plan 纯函数层（ACS3 签名 / 网关信封 / 窗口解析）
 ├── client.js           # Client 半：设置页「Token 统计」UI bundle
-├── typert.host.js      # Typert Host manifest（tokenStats/getStats 描述）
+├── typert.host.js      # Typert Host manifest（tokenStats 6 个 Remote 方法描述）
 ├── cordis.patch.yml    # dsh bundle patch（挂载行）
+├── scripts/            # 冒烟 / repro / 探针（smoke-bailian、probe-bailian 等）
 ├── .github/workflows/  # GitHub Actions 发布
 ├── AGENTS.md           # 面向 AI agent 的开发指南（含踩坑）
 └── LICENSE             # MIT
@@ -111,9 +123,15 @@ dsh-token-stats/
 ## 开发
 
 ```bash
-npm run check           # node --check index.js client.js typert.host.js
+npm run check           # node --check index.js bailian-quota.js client.js typert.host.js
+npm run smoke:bailian   # 百炼纯逻辑冒烟（ACS3 金标准向量 / 信封 / 窗口 / display）
+npm run probe:bailian   # 百炼 AK/SK 全链路只读探针（不打印密钥）
+npm run fix:bailian-workspace  # 修复 RAM 子账号「未加入百炼业务空间」导致的 NotAuthorised（无计费操作）
+npm run e2e             # 全量验收（check + 全部 smoke + 3 个 repro）
 dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机 DSH profile
 ```
+
+> `probe:bailian` / `fix:bailian-workspace` / `smoke:bailian` 三个脚本随 npm 包一起分发——装完 npm 版也能直接在插件目录里跑（凭据从 `~/.dsh/.credentials.yaml` 或环境变量 `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET` 读取，脚本不打印密钥明文）。
 
 详见 [AGENTS.md](AGENTS.md)——记录了 DSH 正式插件（Host/Client/Typert 三件套）的完整机制和踩坑。
 
