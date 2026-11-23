@@ -1216,7 +1216,10 @@ window.__ModuleLoader__.load({
       // 配好后卡片自然出现。v1.8.0 起 mimo 同规则：没配 Cookie（XIAOMI_MIMO_COOKIE
       // 环境变量）就无卡片；「本地用量」形态只在配过 Cookie 且失效降级时出现。
 
-      /** 套餐读数开关（issue #3）：props.on = 读数是否显示，props.onChange(next)。
+      /** 套餐读数开关（issue #3）：props.on = 读数是否显示，props.onChange(nextOn)。
+       *  ⚠️ onChange 发出的是下一个「显示」状态（nextOn = !on），不是 nextHidden——
+       *  下游 QuotaCard.onToggle 负责反转成 nextHidden 再交给 QuotaSection（issue #5：
+       *  v1.12.0 这里原样透传导致两个方向都是空操作，开关点不动）。
        *  点击只调 onChange，真正落库走 host 的 setQuotaHidden（由 QuotaSection 处理），
        *  失败时宿主状态不变、强刷后 UI 回到真实状态。stopPropagation 防止触发
        *  卡片/页面的其它点击行为。 */
@@ -1243,8 +1246,11 @@ window.__ModuleLoader__.load({
         const p = props.provider;
         const v = props.value;
         const label = quotaProviderLabel(p);
-        const onToggle = (next) => {
-          if (props.onToggle) props.onToggle(next);
+        // QuotaToggle.onChange 发 nextOn（下一个显示状态）；QuotaSection 的
+        // onToggle/toggle 期望 nextHidden（下一个隐藏状态）——两者互为反义，
+        // 必须在这里反转（issue #5：v1.12.0 漏了反转，开关两个方向都点不动）。
+        const onToggle = (nextOn) => {
+          if (props.onToggle) props.onToggle(!nextOn);
         };
         // 隐藏态：host 短路返回 { ok:false, kind:"hidden" }。卡片仍渲染（开关要能
         // 打开），但不走「获取失败」错误样式——隐藏是用户自己的选择，不是故障。

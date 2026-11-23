@@ -26,6 +26,7 @@ dsh-token-stats/
 ├── .github/workflows/release.yml  # 打 v* 标签时构建并发布 GitHub Release
 ├── scripts/smoke-store.mjs   # store 持久化冒烟（TOKEN_STATS_PLUGIN 指定被测 index.js；缺省测本包 index.js）
 ├── scripts/smoke-seed-dedup.mjs # fork 继承前缀去重回归（issue #1：inheritedEventCount 切点/标记回退/全继承/live 防御/旧 store 重扫自愈）
+├── scripts/smoke-quota-toggle.mjs # 套餐开关点击链路行为回归（issue #5：vm 渲染真实组件+模拟点击，钉住 nextOn→nextHidden 极性）
 ├── scripts/smoke-quota.mjs   # quota 路径冒烟（stub _httpGet/_quotaApiKey 驱动各 provider fixture）
 ├── scripts/smoke-bailian.mjs # 百炼纯逻辑冒烟（ACS3 金标准向量/请求形状/信封/窗口/display，66 断言）
 ├── scripts/smoke-robust-host.mjs    # 0.1.7 容错回归：host init 在恶劣 seam 下不抛
@@ -181,7 +182,7 @@ window.__ModuleLoader__.load({
   7. **只有百分比，没有金额**：`/zen/go/v1/usage` 不给 limit/balance（社区插件里的 `usedUsd` 是拿硬编码 `{12,30,60}` 自己算的）。绝对金额要按官方规则「5h = 月额度的 20%、weekly = 50%、monthly = 100%」从**当前模型**的月度限额推导（限额随模型变，$15–$100），且绝对金额在 `opencode.ai/_server` 那个 cookie 鉴权的 server-function 端点上才有——**需要 dashboard 会话 Cookie + wrk_ workspace id，API key 拿不到**，所以本插件只渲染百分比。插件内部 key 是 `opencode`，route id `opencode-go` → 内部 key 的映射只发生在 client 的 `PROVIDER_ALIASES`。
 - **bailian（阿里云百炼 Token Plan 个人版，v1.11.0 起）**：详见下方「百炼 Token Plan」专节。AK/SK 纯 HTTP 通道（官方 CLI 契约），凭据 ref `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET`（+可选 `ALIBABA_CLOUD_SECURITY_TOKEN`），设置页卡片配置（门控：配置了 qwen token plan 模型才显示）。
 - **缓存**：每 provider 成功 30s TTL；失败指数退避 5s→30min（`streak` 递增）；`force=true` 先清缓存再拉（客户端点击读数时传）。
-- **按 provider 开关（v1.12.0，issue #3）**：设置页每张配额卡头部有 `role="switch"` 开关（`QuotaToggle`）。host 侧 `_quotaHidden: Set` 持久化到 **`<DSH_HOME>/data/dsh-token-stats/quota-prefs.json`**（`{version:1, hidden:[...]}`，与 stats store 完全分离，init 时 `_loadQuotaPrefs` 恢复，`setQuotaHidden` 时原子写）。隐藏的 provider 在 `_getQuotaCached` **第一行短路**返回 `{ok:false, kind:"hidden"}`——不发任何 HTTP、不进缓存/退避 streak；composer 遇 `kind==="hidden"` 整行不渲染，设置页渲染「已隐藏」紧凑卡（开关仍在）。`setQuotaHidden(provider, hidden)` 切换时清该 provider 的 `_quotaCache`（bailian 连 `_bailianAuxCache`），重新显示立即拉新读数；未知 provider 返回外层 `{ok:false, error:{code:"unknown_provider"}}`。凭据完全不动。
+- **按 provider 开关（v1.12.0，issue #3）**：设置页每张配额卡头部有 `role="switch"` 开关（`QuotaToggle`）。host 侧 `_quotaHidden: Set` 持久化到 **`<DSH_HOME>/data/dsh-token-stats/quota-prefs.json`**（`{version:1, hidden:[...]}`，与 stats store 完全分离，init 时 `_loadQuotaPrefs` 恢复，`setQuotaHidden` 时原子写）。隐藏的 provider 在 `_getQuotaCached` **第一行短路**返回 `{ok:false, kind:"hidden"}`——不发任何 HTTP、不进缓存/退避 streak；composer 遇 `kind==="hidden"` 整行不渲染，设置页渲染「已隐藏」紧凑卡（开关仍在）。`setQuotaHidden(provider, hidden)` 切换时清该 provider 的 `_quotaCache`（bailian 连 `_bailianAuxCache`），重新显示立即拉新读数；未知 provider 返回外层 `{ok:false, error:{code:"unknown_provider"}}`。凭据完全不动。⚠️ **开关极性坑（v1.12.1，issue #5，勿回退）**：`QuotaToggle.onChange` 发的是 **nextOn（下一个显示状态 = !on）**，`QuotaSection.toggle` 期望 **nextHidden**——两者互为反义，必须在 `QuotaCard.onToggle` 包装器里反转（`props.onToggle(!nextOn)`）。v1.12.0 原样透传导致两个方向都是空操作（开关点不动）；host API 本身正确，纯 client 接线 bug。点击链路行为回归：`npm run smoke:toggle`（vm 渲染真实组件 + 模拟点击，断言 setQuotaHidden 布尔方向与状态翻转；对修复前代码必须红）。
 - **wire 形状**：`{ ok:true, value }` 信封内 `value` 是判别联合——成功 `{ ok:true, provider, display:{fiveHrPct,weeklyPct,monthlyPct,fiveHrResetsIn,weeklyResetsIn,monthlyResetsIn,balanceText,balanceUsd,currency} }`（**9 个字段恒在，缺省为 null**），失败 `{ ok:false, provider, kind, message }`。typert.host.js 的 zod schema 与此**逐字段对应**，改返回值必须同步改 schema（网关 strict 校验）。`monthlyPct`/`monthlyResetsIn` 是 v1.10.0 为 opencode-go 的 30d 窗口加的，v1.11.0 起 bailian 的订阅月窗口也用；**其余 provider 恒为 null**（`quotaWireValue` 统一补齐，老解析器不用改）。
 - **不落盘**：quota **读数状态**纯内存（`_quotaCache`/`_quotaActiveRef`），与 stats store 完全无关，STORE_VERSION 不需要动。唯一落盘的是用户显示偏好 `quota-prefs.json`（见上条「按 provider 开关」），独立文件、独立 version。
 - **解析器**是模块级纯函数（minimax 双 schema / deepseek balance_infos / kimi limits+usage / openrouter credits / zhipu unit=3|6 / opencode usage 三窗口），改动后跑 `npm run smoke:quota`（脚本 stub `_httpGet`/`_quotaApiKey` 驱动各 provider fixture）。
@@ -207,6 +208,7 @@ window.__ModuleLoader__.load({
 npm run e2e              # 全链路：check + 全部 smoke + 3 个 repro（含启动预演；最终验收命令）
 npm run check            # node --check index.js bailian-quota.js client.js typert.host.js
 npm run smoke:seed       # fork 继承前缀去重回归（issue #1：切点/标记回退/全继承/live 防御/旧 store 自愈，无需 DSH）
+npm run smoke:toggle     # 套餐开关点击链路行为回归（issue #5：vm 渲染真实组件+模拟点击，钉住极性；无需 DSH）
 npm run smoke:quota      # quota 解析/缓存/信封冒烟（无需 DSH）
 npm run smoke:bailian    # 百炼纯逻辑冒烟：ACS3 金标准向量/请求形状/信封/窗口/display（无需 DSH）
 npm run smoke:robust     # 0.1.7 容错回归：host init / client apply 在恶劣 seam 下不抛（无需 DSH）
