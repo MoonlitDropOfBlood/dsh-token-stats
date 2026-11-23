@@ -10,12 +10,25 @@
  * Needs the workspace node_modules junctions (see AGENTS.md):
  *   node_modules/@deepseek-ai -> <DSH deployment>/node_modules/@deepseek-ai
  *   node_modules/zod          -> <DSH deployment>/node_modules/zod
+ *
+ * Drives every tokenStats Remote method (7 of them since v1.12.0):
+ *   getStats / getQuota / getAllQuotas / getBailianSetup /
+ *   saveBailianCredentials / clearBailianCredentials / setQuotaHidden
  */
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Context, Service } from "@deepseek-ai/cordis";
 import { TypertRegistry } from "@deepseek-ai/dsh-typert-registry";
 import { TypertGatewayService } from "@deepseek-ai/dsh-api-gateway";
 import { TYPERT } from "../typert.host.js";
-import { TokenStatsService } from "../index.js";
+
+// **必须在 import index.js 之前**隔离 DSH_HOME：index.js 在模块加载时就锁定
+// 持久化路径，而 setQuotaHidden 会写 <DSH_HOME>/data/dsh-token-stats/quota-prefs.json
+// ——不隔离就会把「隐藏 deepseek」写进用户真实的 ~/.dsh 偏好。
+// （cordis / typert / gateway 的静态 import 无此副作用，保留静态形式。）
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), "dsh-ts-strict-"));
+const { TokenStatsService } = await import("../index.js");
 
 const errorReplacer = (_key, value) => {
   if (value instanceof Error) {
@@ -52,6 +65,7 @@ for (const endpoint of [
   "tokenStats/getBailianSetup",
   "tokenStats/saveBailianCredentials",
   "tokenStats/clearBailianCredentials",
+  "tokenStats/setQuotaHidden",
 ]) {
   const descriptor = typert.local.get(endpoint);
   console.log(`[3] local.get(${JSON.stringify(endpoint)}):`, descriptor === undefined ? "UNDEFINED" : JSON.stringify(shallow(descriptor), errorReplacer));
@@ -89,6 +103,12 @@ const cases = [
   ["tokenStats/getBailianSetup", { args: {} }],
   ["tokenStats/clearBailianCredentials", { args: {} }],
   ["tokenStats/getBailianSetup", { args: {} }],
+  // issue #3：套餐读数开关（隐藏 → 短路读数 → 恢复 → 未知 provider）。
+  ["tokenStats/setQuotaHidden", { args: { provider: "deepseek", hidden: true } }],
+  ["tokenStats/getAllQuotas", { args: { force: false } }],
+  ["tokenStats/getQuota", { args: { provider: "deepseek", force: false } }],
+  ["tokenStats/setQuotaHidden", { args: { provider: "deepseek", hidden: false } }],
+  ["tokenStats/setQuotaHidden", { args: { provider: "nope", hidden: true } }],
 ];
 // DSH 0.2.1-rc.2's gateway dispatches on behalf of a Peer: assertPeerLive
 // reads peer.signal.aborted and owner principals skip the remoteAccess
@@ -130,4 +150,29 @@ assert(credCalls.unset.includes("ALIBABA_CLOUD_ACCESS_KEY_ID") && credCalls.unse
 assert(setupAfterClear && setupAfterClear.akConfigured === false, "清除后 getBailianSetup: akConfigured=false");
 const allQuotas = inner(results[2]);
 assert(allQuotas && allQuotas.quotas && allQuotas.quotas.bailian && allQuotas.quotas.bailian.kind === "unconfigured", "getAllQuotas: bailian 无 AK/SK → unconfigured（不造假读数）");
+
+// 7. issue #3（v1.12.0）：setQuotaHidden 走 strict dispatch，隐藏后读数短路。
+//    失败语义是宿主业务信封 {ok:false, error:{code}}（不是网关 rpcFailure），
+//    所以单独取「宿主外层信封」而不能用 inner()（inner 只认 ok:true 的 value）。
+const hostEnvelope = (r) => (r && r.ok === true ? r.value : r);
+const prefsHidden = inner(results[8]);
+assert(prefsHidden && Array.isArray(prefsHidden.hidden) && prefsHidden.hidden.includes("deepseek"), "setQuotaHidden(deepseek,true): value.hidden 含 deepseek");
+const hiddenQuotas = inner(results[9]);
+assert(
+  hiddenQuotas && hiddenQuotas.quotas && hiddenQuotas.quotas.deepseek && hiddenQuotas.quotas.deepseek.kind === "hidden",
+  "getAllQuotas: 隐藏后 quotas.deepseek.kind === hidden",
+);
+// getQuota 的 value 就是 quota value（不是再一层 ok/value 信封）。
+const hiddenQuota = inner(results[10]);
+assert(
+  hiddenQuota && hiddenQuota.ok === false && hiddenQuota.kind === "hidden" && hiddenQuota.provider === "deepseek",
+  "getQuota(deepseek): 隐藏时返回 {ok:false, kind:'hidden'}",
+);
+const prefsVisible = inner(results[11]);
+assert(prefsVisible && Array.isArray(prefsVisible.hidden) && !prefsVisible.hidden.includes("deepseek"), "setQuotaHidden(deepseek,false): value.hidden 不含 deepseek");
+const unknownPrefs = hostEnvelope(results[12]);
+assert(
+  unknownPrefs && unknownPrefs.ok === false && unknownPrefs.error && unknownPrefs.error.code === "unknown_provider",
+  "setQuotaHidden(nope): 宿主信封 ok=false, error.code=unknown_provider",
+);
 console.log(process.exitCode === 1 ? "DONE (WITH FAILURES)" : "DONE — ALL PASS");

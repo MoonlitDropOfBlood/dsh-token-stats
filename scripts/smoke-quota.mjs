@@ -578,5 +578,101 @@ check(
   svc.ctx = makeCtx();
 }
 
+// ====== issue #3：套餐读数按 provider 开关（hidden）======
+// 短路发生在 `_getQuotaCached` 第一行，**在凭据解析与 force 清缓存之前**：
+// 隐藏的 provider 不发任何 HTTP、不写 _quotaCache、也不进退避 streak。
+// 因此这些用例与 env-key 分支无关（不依赖真实凭据）。
+{
+  // 干净起点：deepseek 有凭据、有成功 fixture，且不被隐藏。
+  svc._quotaApiKey = async () => ({ apiKeyRef: "TEST", apiKey: "k", cookieRef: null, cookie: null });
+  let httpCalls = 0;
+  svc._httpGet = async () => {
+    httpCalls++;
+    return { ok: true, body: JSON.stringify({ is_available: true, balance_infos: [{ currency: "CNY", total_balance: "43.97" }] }) };
+  };
+  svc._quotaHidden.clear();
+  svc._quotaCache.deepseek = null;
+
+  // 1. 隐藏 deepseek → ok:true + 返回当前隐藏集合（排序）。
+  r = await svc.setQuotaHidden("deepseek", true);
+  check(
+    "setQuotaHidden(deepseek, true) → ok:true, hidden 含 deepseek",
+    r && r.ok === true && Array.isArray(r.value.hidden) && r.value.hidden.includes("deepseek"),
+    JSON.stringify(r),
+  );
+
+  // 2. 隐藏后 getQuota 短路：kind=hidden、零 HTTP、零缓存条目。
+  httpCalls = 0;
+  r = await svc.getQuota("deepseek", false);
+  check(
+    "getQuota hidden → kind=hidden",
+    r && r.ok === true && r.value && r.value.ok === false && r.value.kind === "hidden" && r.value.provider === "deepseek",
+    JSON.stringify(r && r.value),
+  );
+  check("getQuota hidden → 0 HTTP calls", httpCalls === 0);
+  check("getQuota hidden → no _quotaCache entry", svc._quotaCache.deepseek == null);
+  r = await svc.getQuota("deepseek", true);
+  check(
+    "getQuota hidden + force → still kind=hidden, still 0 HTTP",
+    r && r.value && r.value.kind === "hidden" && httpCalls === 0,
+  );
+
+  // 3. getAllQuotas：deepseek 隐藏，其余 provider 不受影响。
+  r = await svc.getAllQuotas(false);
+  const quotas = r && r.ok === true && r.value ? r.value.quotas : null;
+  check(
+    "getAllQuotas → quotas.deepseek.kind === hidden",
+    !!(quotas && quotas.deepseek && quotas.deepseek.kind === "hidden"),
+    JSON.stringify(quotas && quotas.deepseek),
+  );
+  check(
+    "getAllQuotas → other providers unaffected (minimax not hidden)",
+    !!(quotas && quotas.minimax && quotas.minimax.kind !== "hidden"),
+    JSON.stringify(quotas && quotas.minimax),
+  );
+
+  // 4. 恢复显示 → 缓存被清、下一次 getQuota 立即拉新（成功 fixture）。
+  r = await svc.setQuotaHidden("deepseek", false);
+  check(
+    "setQuotaHidden(deepseek, false) → hidden 不含 deepseek",
+    r && r.ok === true && !r.value.hidden.includes("deepseek"),
+    JSON.stringify(r && r.value),
+  );
+  httpCalls = 0;
+  r = await svc.getQuota("deepseek", false);
+  check(
+    "unhidden → next getQuota fetches immediately",
+    r && r.value && r.value.ok === true && r.value.display.balanceText === "¥43.97" && httpCalls === 1,
+    JSON.stringify({ calls: httpCalls, value: r && r.value }),
+  );
+
+  // 5. 未知 provider → 业务失败（不是抛异常）。
+  r = await svc.setQuotaHidden("nope", true);
+  check(
+    "setQuotaHidden(unknown) → ok:false, error.code=unknown_provider",
+    r && r.ok === false && r.error && r.error.code === "unknown_provider",
+    JSON.stringify(r),
+  );
+
+  // 6. 持久化：同 DSH_HOME 的新实例恢复隐藏集合（quota-prefs.json）。
+  r = await svc.setQuotaHidden("deepseek", true);
+  check("re-hide before restart", r && r.ok === true && r.value.hidden.includes("deepseek"));
+  const svc2 = new TokenStatsService(makeCtx(), undefined);
+  svc2[initKey]();
+  check("new instance restored _quotaHidden", svc2._quotaHidden instanceof Set && svc2._quotaHidden.has("deepseek"));
+  let httpCalls2 = 0;
+  svc2._quotaApiKey = async () => ({ apiKeyRef: "TEST", apiKey: "k", cookieRef: null, cookie: null });
+  svc2._httpGet = async () => {
+    httpCalls2++;
+    return { ok: true, body: JSON.stringify({ is_available: true, balance_infos: [{ currency: "CNY", total_balance: "43.97" }] }) };
+  };
+  const r2 = await svc2.getQuota("deepseek", false);
+  check(
+    "restored instance: getQuota still hidden, 0 HTTP",
+    r2 && r2.value && r2.value.kind === "hidden" && httpCalls2 === 0,
+    JSON.stringify(r2 && r2.value),
+  );
+}
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

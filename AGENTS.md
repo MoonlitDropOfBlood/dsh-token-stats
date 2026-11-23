@@ -7,10 +7,11 @@
 一个 **DeepSeek Harness（DSH）双面（Host + Client）插件**：在 DSH Web UI 的**设置**面板里展示 Token 消耗统计。
 
 - 设置面板新增 **Token 统计** 页（`settings.section`，order 25，位于"模型/插件/智能体预设"之后）。
-- **近 7 天 / 近 30 天** 两个 Tab（均包含今天）：堆叠柱状图（每天 × 每个模型）+ 饼图（每个模型区间总消耗）。
+- **近 7 天 / 近 30 天** 两个 Tab（均包含今天）：堆叠柱状图（每天 × 每个模型）+ 饼图（每个模型区间总消耗）。图例与悬停显示「模型 · provider」（v1.12.0，issue #4；provider 为空回退纯模型名）。
+- **汇总卡含缓存命中率**（v1.12.0，issue #2）：`cacheRead / (input + cacheRead)`，柱状图悬停追加当天命中率。
 - **GitHub 风格热力图**：近一年每日活跃，天数随容器宽度自适应（最多 365 天）。
-- **套餐余额读数**：composer 工具行内联显示当前 provider 的余额/用量（参考 dsh-musage，MIT），跟随当前模型自动切换。
-- 数据来自 DSH **会话日志**（`assistant/message` 的 `usage`），按本地日 × 模型聚合，历史自动回填。
+- **套餐余额读数**：composer 工具行内联显示当前 provider 的余额/用量（参考 dsh-musage，MIT），跟随当前模型自动切换；**可按 provider 开关**（v1.12.0，issue #3，设置页卡片开关 + host 持久化）。
+- 数据来自 DSH **会话日志**（`assistant/message` 的 `usage`），按本地日 × 模型（`provider::model`）聚合，历史自动回填；**fork 继承前缀不重复计数**（v1.12.0，issue #1）。
 
 ## 目录结构
 
@@ -24,6 +25,7 @@ dsh-token-stats/
 ├── cordis.patch.yml      # dsh bundle patch（挂载行）
 ├── .github/workflows/release.yml  # 打 v* 标签时构建并发布 GitHub Release
 ├── scripts/smoke-store.mjs   # store 持久化冒烟（TOKEN_STATS_PLUGIN 指定被测 index.js；缺省测本包 index.js）
+├── scripts/smoke-seed-dedup.mjs # fork 继承前缀去重回归（issue #1：inheritedEventCount 切点/标记回退/全继承/live 防御/旧 store 重扫自愈）
 ├── scripts/smoke-quota.mjs   # quota 路径冒烟（stub _httpGet/_quotaApiKey 驱动各 provider fixture）
 ├── scripts/smoke-bailian.mjs # 百炼纯逻辑冒烟（ACS3 金标准向量/请求形状/信封/窗口/display，66 断言）
 ├── scripts/smoke-robust-host.mjs    # 0.1.7 容错回归：host init 在恶劣 seam 下不抛
@@ -32,7 +34,7 @@ dsh-token-stats/
 ├── scripts/smoke-typert.mjs         # 用部署侧 dsh-typert-loader 真校验器跑 TYPERT manifest
 ├── scripts/smoke-compat.mjs         # 用部署侧 dsh-app-boot 的 evaluatePluginCompatibility 预检本包 manifest
 ├── scripts/repro-client-mount.mjs   # 用部署侧真 client 网关跑 $mount，验证 client 描述符能挂上
-├── scripts/repro-strict-dispatch.mjs # 用部署侧真 TypertRegistry+Gateway 跑 invokeRpc（0.2.0 strict dispatch 回归；v1.11.0 起驱动全部 6 个 Remote 方法 + credentials stub + 密钥不回显断言）
+├── scripts/repro-strict-dispatch.mjs # 用部署侧真 TypertRegistry+Gateway 跑 invokeRpc（0.2.0 strict dispatch 回归；v1.12.0 起驱动全部 7 个 Remote 方法 + credentials stub + 密钥不回显断言）
 ├── scripts/repro-all-manifests.mjs  # 全组合 typert manifest 注册冲突排查（手动诊断用）
 ├── scripts/repro-profile-boot.mjs   # 启动预演：真实 loadProfileDirectory+composeEntries 跑本机 profile，断言本 bundle 不被静默跳过
 ├── scripts/probe-mimo.mjs           # MiMo 端点探针：按凭据 ref 扫各区域主机的候选配额路径（不打印 key）
@@ -92,6 +94,11 @@ Node ESM 不支持 Stage 3 装饰器（`@Remote("x")` 直接写会 `SyntaxError`
 - **只有 `assistant/message` 事件带 usage**：`event.data.usage`（TokenUsage）+ `event.data.message.source`（`{ kind: 'model', provider, model }`）给出模型归属。`total = input + output + cacheRead + cacheWrite`（不把 reasoningTokens 重复计入 total）。
 - **HISTORY**：`this.ctx.get("sessionQuery")` → `listSessions()` + `readSession(id)` 一次性回填（并发 4）。只用 `ev.time < 插件启动时间` 之外的全部历史（实际上通过水位线去重，无需按时间切分）。
 - **DEDUP 水位线**：`_watermark: Map<sessionId, maxSeq>`。实时监听和回填两条路径都做 `if (seq <= wm) skip; wm = seq; fold`（同步 check-and-set，单线程下无竞态），**任何一条先到谁计数，绝不重复**。
+- **FORK 继承切点（v1.12.0，issue #1，勿回退）**：水位线只覆盖「同一份日志内部」；DSH fork / seeded subagent 会话会把父日志前缀**原样复制**进子会话（seq/time/message.id 全同），跨会话副本必须靠 DSH 的继承标记排除：
+  - `sessionQuery.readSession(id)` 返回 `{ session: header克隆, inheritedEventCount, events }`——`header.isSeeded` 为真时 **`seq < inheritedEventCount` 的事件全是继承副本，跳过不 fold**（水位线照常推进）。`inheritedEventCount = 0`（显式空前缀）必须全部计数，别误判。
+  - 宿主未返回 `inheritedEventCount` 时回退：扫描**最后一个** `session/end-seed { inherited: true }` 标记（`buildForkSeed` 把它放在 seq = boundary+1 = 切点；fork 的合成收尾事件在标记之后、不带 usage）；`isSeeded` 但无计数也无标记 → 整段日志视为继承（DSH Session 构造器不变量：seeded 快照要么有标记要么 `inheritedEventCount === log.length`）。
+  - live 路径防御：`_onSessionEvent` 跳过 `event.seq < session.inheritedEventCount`（当前 DSH 构造期 seed 走 `log.push` **不 emit** live 事件，此检查兜底未来漂移）。
+  - **`STORE_VERSION` 1→2**：版本不匹配触发全量重扫，已被副本污染的历史聚合**自愈**，无需手动删 stats.json。回归：`npm run smoke:seed`。
 - **PERSIST 落盘**：聚合（`_byDay`）、水位线、`_folded`（已完整回填的会话集合）、`_modelMeta` 持久化到 `<DSH_HOME>/data/dsh-token-stats/stats.json`（`DSH_HOME` 读进程环境变量，缺省 `~/.dsh`；会话池是全局的，存储也放全局而非 profile 下）。变更后 1.5s 防抖写盘（tmp+rename 原子替换），`ctx.effect` 的 disposer 里同步 flush。**冷启动跳过 `_folded` 里的会话（不读 `readSession`），只扫新会话**；文件缺失/损坏/version 不匹配时退化为全量扫描。删除该文件可强制全量重扫。
 - 实时监听从插件激活起累计；回填处理插件激活前的历史；两者通过水位线无缝合并。
 
@@ -119,6 +126,7 @@ window.__ModuleLoader__.load({
 - **CSS 注入**用 `document.createElement("style")` + `ctx.effect(() => () => styleTag.remove())` 清理（动态插件的 `styles.insert` 在这里不存在）。
 - **轮询/延迟**用浏览器原生 `setInterval`/`setTimeout`，在 `React.useEffect` 里返回清理函数。
 - **宽度自适应**用 `ResizeObserver` 监听页面容器，热力图天数由宽度计算（`weeks = min(floor((w - pads)/(cell+gap)), 53)`，`days = min(365, weeks*7)`）。
+- **统计页显示口径（v1.12.0）**：① 缓存命中率 = `cacheRead / (input + cacheRead)`（input 是未缓存输入——DSH token-meter 把 `inputTokens` 映射为 `uncachedInputTokens`；cacheWrite 不计入分母），汇总卡第 4 张 + 柱状图悬停追加当天值，分母为 0 显「—」；② host 聚合键本就是 `provider::model`，client `buildRange` 必须携带 provider，图例/悬停经 `modelLabel()` 显示「模型 · provider」（provider 为空回退纯模型名，issue #4）。
 - 设置页注册：`ctx.slots.inject("settings.section", () => ctx.slots.register({ name: "settings.section", id: "token-stats", order: 25, label: () => SETTINGS_LABEL }, TokenStatsPage))`。
 - **设置导航图标（两套外壳并存，v1.9.0 起）**：
   - **DSH 0.2.2-rc.1+（新路径）**：宿主新增 `settings.section.icon` 槽，插件按 **section id** 注册图标组件即可——`ctx.slots.inject("settings.section.icon", () => ctx.slots.register({ name: "settings.section.icon", id: SETTINGS_SECTION_ID, order: 25 }, TokenStatsNavIcon))`。id 必须与 `settings.section` 贡献的 id 完全一致（`token-stats`），不匹配的 id 永不渲染；组件收到 `size`（像素）与 `active`，**按钮、label、装饰性 `span.navIcon` 容器都由外壳拥有**，图标命中时外壳不再画通用齿轮。图标用 `currentColor` 描边（stroke-only、viewBox 24×24、stroke-width 2），随原生 hover/active 颜色变化。
@@ -173,8 +181,9 @@ window.__ModuleLoader__.load({
   7. **只有百分比，没有金额**：`/zen/go/v1/usage` 不给 limit/balance（社区插件里的 `usedUsd` 是拿硬编码 `{12,30,60}` 自己算的）。绝对金额要按官方规则「5h = 月额度的 20%、weekly = 50%、monthly = 100%」从**当前模型**的月度限额推导（限额随模型变，$15–$100），且绝对金额在 `opencode.ai/_server` 那个 cookie 鉴权的 server-function 端点上才有——**需要 dashboard 会话 Cookie + wrk_ workspace id，API key 拿不到**，所以本插件只渲染百分比。插件内部 key 是 `opencode`，route id `opencode-go` → 内部 key 的映射只发生在 client 的 `PROVIDER_ALIASES`。
 - **bailian（阿里云百炼 Token Plan 个人版，v1.11.0 起）**：详见下方「百炼 Token Plan」专节。AK/SK 纯 HTTP 通道（官方 CLI 契约），凭据 ref `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET`（+可选 `ALIBABA_CLOUD_SECURITY_TOKEN`），设置页卡片配置（门控：配置了 qwen token plan 模型才显示）。
 - **缓存**：每 provider 成功 30s TTL；失败指数退避 5s→30min（`streak` 递增）；`force=true` 先清缓存再拉（客户端点击读数时传）。
+- **按 provider 开关（v1.12.0，issue #3）**：设置页每张配额卡头部有 `role="switch"` 开关（`QuotaToggle`）。host 侧 `_quotaHidden: Set` 持久化到 **`<DSH_HOME>/data/dsh-token-stats/quota-prefs.json`**（`{version:1, hidden:[...]}`，与 stats store 完全分离，init 时 `_loadQuotaPrefs` 恢复，`setQuotaHidden` 时原子写）。隐藏的 provider 在 `_getQuotaCached` **第一行短路**返回 `{ok:false, kind:"hidden"}`——不发任何 HTTP、不进缓存/退避 streak；composer 遇 `kind==="hidden"` 整行不渲染，设置页渲染「已隐藏」紧凑卡（开关仍在）。`setQuotaHidden(provider, hidden)` 切换时清该 provider 的 `_quotaCache`（bailian 连 `_bailianAuxCache`），重新显示立即拉新读数；未知 provider 返回外层 `{ok:false, error:{code:"unknown_provider"}}`。凭据完全不动。
 - **wire 形状**：`{ ok:true, value }` 信封内 `value` 是判别联合——成功 `{ ok:true, provider, display:{fiveHrPct,weeklyPct,monthlyPct,fiveHrResetsIn,weeklyResetsIn,monthlyResetsIn,balanceText,balanceUsd,currency} }`（**9 个字段恒在，缺省为 null**），失败 `{ ok:false, provider, kind, message }`。typert.host.js 的 zod schema 与此**逐字段对应**，改返回值必须同步改 schema（网关 strict 校验）。`monthlyPct`/`monthlyResetsIn` 是 v1.10.0 为 opencode-go 的 30d 窗口加的，v1.11.0 起 bailian 的订阅月窗口也用；**其余 provider 恒为 null**（`quotaWireValue` 统一补齐，老解析器不用改）。
-- **不落盘**：quota 状态纯内存（`_quotaCache`/`_quotaActiveRef`），与 stats store 完全无关，STORE_VERSION 不需要动。
+- **不落盘**：quota **读数状态**纯内存（`_quotaCache`/`_quotaActiveRef`），与 stats store 完全无关，STORE_VERSION 不需要动。唯一落盘的是用户显示偏好 `quota-prefs.json`（见上条「按 provider 开关」），独立文件、独立 version。
 - **解析器**是模块级纯函数（minimax 双 schema / deepseek balance_infos / kimi limits+usage / openrouter credits / zhipu unit=3|6 / opencode usage 三窗口），改动后跑 `npm run smoke:quota`（脚本 stub `_httpGet`/`_quotaApiKey` 驱动各 provider fixture）。
 
 **Client 侧显示位置**（与 dsh-musage 相同）：`conversation.input.right` 槽位——composer 卡内 `.trailing` 工具行，**紧贴 model select 左侧**；容器 `inline-flex + margin-left:auto + gap:4 + fontSize:11 + tabular-nums`。要点：
@@ -197,6 +206,7 @@ window.__ModuleLoader__.load({
 ```bash
 npm run e2e              # 全链路：check + 全部 smoke + 3 个 repro（含启动预演；最终验收命令）
 npm run check            # node --check index.js bailian-quota.js client.js typert.host.js
+npm run smoke:seed       # fork 继承前缀去重回归（issue #1：切点/标记回退/全继承/live 防御/旧 store 自愈，无需 DSH）
 npm run smoke:quota      # quota 解析/缓存/信封冒烟（无需 DSH）
 npm run smoke:bailian    # 百炼纯逻辑冒烟：ACS3 金标准向量/请求形状/信封/窗口/display（无需 DSH）
 npm run smoke:robust     # 0.1.7 容错回归：host init / client apply 在恶劣 seam 下不抛（无需 DSH）
@@ -206,7 +216,7 @@ npm run smoke:compat     # 用部署侧 dsh-app-boot 真兼容门预检 manifest
 npm run probe:bailian    # 百炼 AK/SK 全链路只读探针（无凭据时打印 RAM 配置指引；不打印密钥）
 npm run fix:bailian-workspace  # RAM 子账号 NotAuthorised 修复（业务空间授权三步，无计费操作）
 node scripts/repro-client-mount.mjs     # 用部署侧真 client 网关跑 $mount，验证 client 描述符能挂上（需 junction）
-node scripts/repro-strict-dispatch.mjs  # 用部署侧真 TypertRegistry+Gateway invokeRpc 驱动本包全部 6 个 Remote 方法（需 junction）
+node scripts/repro-strict-dispatch.mjs  # 用部署侧真 TypertRegistry+Gateway invokeRpc 驱动本包全部 7 个 Remote 方法（需 junction）
 node scripts/repro-profile-boot.mjs     # 启动预演：真实 loadProfileDirectory+composeEntries 跑 DSH_PROFILE_DIR，断言 bundle 不被跳过
 dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机 DSH profile
 ```
@@ -270,8 +280,8 @@ dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机
   - `NotLogined` → 用 AK/SK 强制重换 token 重试**一次**（官方 refresh-token.ts 同款，不循环）；token 内存缓存 TTL 10min 削峰（按 AK+region 键，token 本身数日有效）。
   - subscription 三必填 specCode/status/remainingDays；addon 全可选缺省 0。balanceText：addon.totalCredits>0 → 「加购包剩余 X Credits」，否则 subscription → 「套餐 specCode · 剩 N 天」。
 - **Credits ≠ token**：不做 token→Credits 换算（官方明示统计口径差异 + 夜间折扣/预览期折扣漂移）。统计页 token 聚合与配额读数是两个独立维度。
-- **验证**：`npm run smoke:bailian`（66 断言纯逻辑）；`npm run probe:bailian`（真实 AK/SK 全链路只读探针，无凭据打印指引 exit 0）；`repro-strict-dispatch` 驱动全部 6 个 Remote 方法（credentials stub + 密钥不回显断言）。**真实账号全链路已实测通过（2026-11-17）**：RAM AK/SK → token → loginInfo(ALIYUN_LOGINED) → workspace 授权三步 → usage/subscription/addon 全通；live 宿主经网关 RPC force 刷新确认 monthlyPct/reset/balanceText 正确。
-- **Remote 方法 ×6**：getStats / getQuota / getAllQuotas / getBailianSetup / saveBailianCredentials / clearBailianCredentials。新增方法三处同步：index.js markRemoteMethod + typert.host.js invocation/schema（strict codec 必须带 create 工厂）+ client.js CLIENT_REMOTE 描述符（passthrough + createPassthrough）。
+- **验证**：`npm run smoke:bailian`（66 断言纯逻辑）；`npm run probe:bailian`（真实 AK/SK 全链路只读探针，无凭据打印指引 exit 0）；`repro-strict-dispatch` 驱动全部 7 个 Remote 方法（credentials stub + 密钥不回显断言）。**真实账号全链路已实测通过（2026-11-17）**：RAM AK/SK → token → loginInfo(ALIYUN_LOGINED) → workspace 授权三步 → usage/subscription/addon 全通；live 宿主经网关 RPC force 刷新确认 monthlyPct/reset/balanceText 正确。
+- **Remote 方法 ×7**：getStats / getQuota / getAllQuotas / getBailianSetup / saveBailianCredentials / clearBailianCredentials / setQuotaHidden（v1.12.0，issue #3）。新增方法三处同步：index.js markRemoteMethod + typert.host.js invocation/schema（strict codec 必须带 create 工厂）+ client.js CLIENT_REMOTE 描述符（passthrough + createPassthrough）。
 
 改插件后**必须重启 DSH 进程**才生效（动态 HMR 不适用于正式安装的插件）。验证：
 1. 设置 → 侧栏导航出现 **Token 统计**。
@@ -293,5 +303,5 @@ dsh plugin --profile web add /path/to/dsh-token-stats   # 安装/重装到本机
 - `cordis.patch.yml` 顶层是一个 patch 数组：`- insert:` 用于新增行，`- id:` 用于覆盖已有行。
 - `client.js` 用 `require("react")`（bundle 的模块表提供），**不要** `import` 或动态插件的 `styles`/`host` 全局。
 - `typert.host.js` 的 result schema 是 **strict**：`getStats()` 的返回值必须与 schema 完全匹配（字段不缺席、类型正确），否则网关校验失败。
-- 误删/重复计数风险：任何新增的采集路径都必须走 `_watermark` 水位线，否则同一事件会被计数两次。
+- 误删/重复计数风险：任何新增的采集路径都必须走 `_watermark` 水位线，否则同一事件会被计数两次；**涉及 fork/seeded 会话的还必须过继承切点**（见机制 4「FORK 继承切点」），否则父会话历史被副本重复累加。
 - 时间以**本地时区**的日历日聚合（`dayKeyOf` 用本地 getFullYear/getMonth/getDate）。

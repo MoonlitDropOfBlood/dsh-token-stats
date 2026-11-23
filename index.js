@@ -64,12 +64,25 @@ const WINDOW_DAYS = 400;
  * Durable store path. The session pool lives under `<DSH_HOME>/sessions`
  * (global, not per-profile), so the store sits next to it under
  * `<DSH_HOME>/data/dsh-token-stats/` and survives plugin reinstall/upgrade.
+ *
+ * Bumped 1 → 2 for issue #1: fork / seeded sessions copy the parent's log
+ * prefix (identical seq / time / message.id), and the old backfill folded that
+ * prefix again. A version mismatch discards the restored aggregates and
+ * `_folded` set, so the next start does a full rescan with the inheritance cut
+ * point in place — the polluted history self-heals, no manual stats.json
+ * deletion needed.
  */
-const STORE_VERSION = 1;
+const STORE_VERSION = 2;
 const SAVE_DEBOUNCE_MS = 1500;
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), ".dsh");
 const STORE_DIR = join(DSH_HOME, "data", "dsh-token-stats");
 const STORE_FILE = join(STORE_DIR, "stats.json");
+/**
+ * Quota display preferences (issue #3): which providers the user hid. Kept in
+ * its own file so toggling a switch never rewrites the (much larger) stats
+ * store, and so the two stay independently versioned.
+ */
+const QUOTA_PREFS_FILE = join(STORE_DIR, "quota-prefs.json");
 
 /**
  * Mark one instance method as a Remote export without relying on decorator
@@ -931,6 +944,8 @@ export class TokenStatsService extends TypertRemoteService {
     // 百炼 Token Plan：AK/SK→token 缓存（按 AK+region 键）与订阅/加购包辅助缓存。
     this._bailianTokenCache = Object.create(null);
     this._bailianAuxCache = null;
+    // issue #3：被用户隐藏的 provider（套餐读数开关）。持久化在 quota-prefs.json。
+    this._quotaHidden = new Set();
 
     try {
       markRemoteMethod(this, "getStats", "getStats");
@@ -962,12 +977,25 @@ export class TokenStatsService extends TypertRemoteService {
     } catch (e) {
       this._backfill.error = "clearBailianCredentials 未发布: " + String((e && e.message) || e);
     }
+    try {
+      markRemoteMethod(this, "setQuotaHidden", "setQuotaHidden");
+    } catch (e) {
+      this._backfill.error = "setQuotaHidden 未发布: " + String((e && e.message) || e);
+    }
 
     // Restore the previous run's aggregates so a cold start only scans new sessions.
     try {
       this._loadStore();
     } catch (e) {
       /* missing or corrupt store: start empty and let backfill do a full scan */
+    }
+
+    // Restore the per-provider quota display preferences (issue #3). Best-effort:
+    // an unreadable file just means every provider shows.
+    try {
+      this._loadQuotaPrefs();
+    } catch (e) {
+      /* keep the service answering: no prefs means nothing is hidden */
     }
 
     // Best-effort synchronous flush when the plugin fiber is disposed.
@@ -1072,6 +1100,9 @@ export class TokenStatsService extends TypertRemoteService {
       if (!event || event.type !== "assistant/message") return;
       const sid = session && session.id;
       if (!sid || typeof event.seq !== "number") return;
+      // 防御：继承前缀属于父会话的计数。当前 DSH 构造期 seed 不 emit live 事件，
+      // 此检查兜底未来漂移（live Session 实例带 inheritedEventCount）。
+      if (typeof session.inheritedEventCount === "number" && event.seq < session.inheritedEventCount) return;
       const wm = this._watermark.get(sid) ?? -1;
       if (event.seq <= wm) return;
       this._watermark.set(sid, event.seq);
@@ -1116,10 +1147,29 @@ export class TokenStatsService extends TypertRemoteService {
           try {
             const snap = await sessionQuery.readSession(header.id);
             if (snap && Array.isArray(snap.events)) {
+              // issue #1: fork/seeded 会话复制父日志前缀（seq/time/message.id 全同），
+              // 在这里计数会把父会话历史重复累加。DSH 权威切点 = readSession 返回的
+              // inheritedEventCount；旧宿主无该字段时回退最后一个 session/end-seed
+              // {inherited:true} 标记（seq = 切点）；isSeeded 但无计数也无标记 →
+              // 整段日志视为继承（DSH Session 构造器不变量）。水位线照常推进。
+              const hdr = snap.session || header;
+              const seeded = !!(hdr && hdr.isSeeded);
+              let cut = 0;
+              if (seeded && typeof snap.inheritedEventCount === "number" && snap.inheritedEventCount >= 0) {
+                cut = snap.inheritedEventCount;
+              } else {
+                let marker = -1;
+                for (const ev of snap.events) {
+                  if (ev && ev.type === "session/end-seed" && ev.data && ev.data.inherited === true && typeof ev.seq === "number") marker = ev.seq;
+                }
+                if (marker >= 0) cut = marker;
+                else if (seeded) cut = Infinity;
+              }
               let wm = this._watermark.get(header.id) ?? -1;
               for (const ev of snap.events) {
                 if (!ev || typeof ev.seq !== "number" || ev.seq <= wm) continue;
                 wm = ev.seq;
+                if (ev.seq < cut) continue;
                 this._foldEvent(ev);
               }
               this._watermark.set(header.id, wm);
@@ -1266,6 +1316,40 @@ export class TokenStatsService extends TypertRemoteService {
       this._dirty = false;
     } catch (e) {
       /* shutdown flush is best-effort */
+    }
+  }
+
+  /**
+   * Restore the hidden-provider set for the quota readouts (issue #3).
+   * Deliberately independent of the stats store: an unreadable or foreign file
+   * just leaves every provider visible.
+   */
+  _loadQuotaPrefs() {
+    try {
+      const data = JSON.parse(readFileSync(QUOTA_PREFS_FILE, "utf8"));
+      if (!data || data.version !== 1 || !Array.isArray(data.hidden)) return;
+      for (const name of data.hidden) {
+        if (typeof name === "string" && QUOTA_PROVIDERS[name]) this._quotaHidden.add(name);
+      }
+    } catch (e) {
+      /* missing or corrupt prefs: nothing is hidden */
+    }
+  }
+
+  /** Persist the hidden-provider set (atomic tmp+rename; failures are silent). */
+  _saveQuotaPrefs() {
+    try {
+      const text = JSON.stringify({
+        version: 1,
+        savedAt: Date.now(),
+        hidden: [...this._quotaHidden].sort(),
+      });
+      mkdirSync(STORE_DIR, { recursive: true });
+      const tmp = `${QUOTA_PREFS_FILE}.tmp`;
+      writeFileSync(tmp, text, "utf8");
+      renameSync(tmp, QUOTA_PREFS_FILE);
+    } catch (e) {
+      /* preferences are best-effort: the in-memory set still applies this run */
     }
   }
 
@@ -2010,6 +2094,10 @@ export class TokenStatsService extends TypertRemoteService {
    * hammered. `force` drops the cached entry before reading (手动刷新).
    */
   async _getQuotaCached(provider, force) {
+    if (this._quotaHidden.has(provider)) {
+      // issue #3：隐藏的 provider 不发任何 HTTP、不进缓存/退避 streak。
+      return quotaWireValue({ ok: false, provider, kind: "hidden", message: "已按设置隐藏该 provider 的套餐读数" });
+    }
     if (force) {
       this._quotaCache[provider] = null;
       // 手动刷新 = 全量：百炼辅助缓存（subscription/addon）一并丢弃。
@@ -2063,6 +2151,24 @@ export class TokenStatsService extends TypertRemoteService {
     const quotas = {};
     for (let i = 0; i < names.length; i++) quotas[names[i]] = values[i];
     return { ok: true, value: { quotas } };
+  }
+
+  /**
+   * 切换某个 provider 的套餐读数显示开关（issue #3）：持久化到 quota-prefs.json。
+   * 隐藏时 getQuota/getAllQuotas 短路返回 kind:"hidden"，不发任何 HTTP。
+   */
+  async setQuotaHidden(provider, hidden) {
+    const p = typeof provider === "string" ? provider : "";
+    if (!QUOTA_PROVIDERS[p]) {
+      return { ok: false, error: { code: "unknown_provider", message: "未知 provider: " + p } };
+    }
+    if (hidden === true) this._quotaHidden.add(p);
+    else this._quotaHidden.delete(p);
+    // 切换后清该 provider 缓存：重新显示时立即拉新读数，不残留旧值/退避。
+    this._quotaCache[p] = null;
+    if (p === "bailian") this._bailianAuxCache = null;
+    this._saveQuotaPrefs();
+    return { ok: true, value: { hidden: [...this._quotaHidden].sort() } };
   }
 }
 

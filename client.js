@@ -82,6 +82,10 @@ window.__ModuleLoader__.load({
 .ts-quota-card-value{font-size:18px;font-weight:600;line-height:26px;font-variant-numeric:tabular-nums}
 .ts-quota-card-bar{height:4px;border-radius:2px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}
 .ts-quota-card-bar i{display:block;height:100%;border-radius:2px;background:var(--dsw-alias-state-business-primary,var(--dsh-accent,#4D6BFE))}
+.ts-quota-switch{position:relative;width:28px;height:16px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);cursor:pointer;padding:0;flex:none;transition:background .15s}
+.ts-quota-switch i{position:absolute;top:1px;left:1px;width:12px;height:12px;border-radius:50%;background:var(--dsw-alias-label-secondary);transition:left .15s,background .15s}
+.ts-quota-switch-on{background:var(--dsw-alias-info-fill,#3b82f6);border-color:transparent}
+.ts-quota-switch-on i{left:13px;background:#fff}
 .ts-bailian-setup{display:flex;flex-direction:column;gap:8px}
 .ts-bailian-note{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
 .ts-bailian-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;line-height:20px}
@@ -336,6 +340,35 @@ window.__ModuleLoader__.load({
             create: createPassthrough,
           },
         },
+        {
+          // 套餐读数开关（issue #3）：隐藏/恢复某 provider 的设置页+composer 读数。
+          // 与 host 的 markRemoteMethod("setQuotaHidden") 一一对应。
+          id: "dsh-token-stats#tokenStats/setQuotaHidden",
+          service: "tokenStats",
+          namespace: "tokenStats",
+          method: "setQuotaHidden",
+          invocation: { kind: "direct" },
+          parameters: [
+            {
+              name: "provider",
+              wire: "provider",
+              source: "json",
+              codec: { mode: "strict", typeSymbol: "dsh-token-stats#tokenStats/setQuotaHidden:provider", schema: passthrough(), create: createPassthrough },
+            },
+            {
+              name: "hidden",
+              wire: "hidden",
+              source: "json",
+              codec: { mode: "strict", typeSymbol: "dsh-token-stats#tokenStats/setQuotaHidden:hidden", schema: passthrough(), create: createPassthrough },
+            },
+          ],
+          result: {
+            mode: "strict",
+            typeSymbol: "dsh-token-stats#TokenStatsQuotaPrefsResult",
+            schema: passthrough(),
+            create: createPassthrough,
+          },
+        },
       ],
     };
 
@@ -447,6 +480,11 @@ window.__ModuleLoader__.load({
         return 1;
       }
 
+      /** 图例/悬停里展示的模型名：provider 存在时 `模型 · provider`，否则只显示模型名。 */
+      function modelLabel(m) {
+        return m && m.provider ? m.name + " · " + m.provider : (m && m.name) || "";
+      }
+
       function buildRange(data, rangeDays) {
         const byDate = {};
         for (const d of data.days) byDate[d.date] = d;
@@ -456,11 +494,25 @@ window.__ModuleLoader__.load({
           const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
           const k = keyOf(d);
           const entry = byDate[k];
+          const models = entry && entry.models ? entry.models : [];
+          // 当日 input / cacheRead 合计（汇总卡的「缓存命中率」与柱状图悬停行用）。
+          let dayInput = 0;
+          let dayCacheRead = 0;
+          for (const m of models) {
+            dayInput += m.input || 0;
+            dayCacheRead += m.cacheRead || 0;
+          }
+          // 命中率口径：cacheRead / (input + cacheRead)。input 是未缓存输入
+          // （DSH token-meter 语义），cacheWrite 不计入分母。
+          const hitBase = dayInput + dayCacheRead;
           dayList.push({
             date: k,
             label: d.getMonth() + 1 + "/" + d.getDate(),
             total: entry ? entry.total : 0,
-            models: entry ? entry.models : [],
+            models,
+            input: dayInput,
+            cacheRead: dayCacheRead,
+            hitRate: hitBase > 0 ? dayCacheRead / hitBase : null,
           });
         }
         const totals = new Map();
@@ -468,14 +520,14 @@ window.__ModuleLoader__.load({
           for (const m of day.models) {
             let agg = totals.get(m.key);
             if (!agg) {
-              agg = { total: 0, name: m.name };
+              agg = { total: 0, name: m.name, provider: m.provider || "" };
               totals.set(m.key, agg);
             }
             agg.total += m.total;
           }
         }
         const rangeModels = [];
-        for (const [key, agg] of totals) rangeModels.push({ key, total: agg.total, name: agg.name });
+        for (const [key, agg] of totals) rangeModels.push({ key, total: agg.total, name: agg.name, provider: agg.provider });
         rangeModels.sort((a, b) => b.total - a.total);
         const sum = { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
         for (const day of dayList) {
@@ -541,7 +593,12 @@ window.__ModuleLoader__.load({
               React.createElement(
                 "rect",
                 { key: "b" + i + "_" + m.key, x, y, width: barW, height: h, fill: colorOf[m.key] },
-                React.createElement("title", null, day.label + " · " + rec.name + ": " + fmtCompact(rec.total)),
+                React.createElement(
+                  "title",
+                  null,
+                  day.label + " · " + modelLabel(rec) + ": " + fmtCompact(rec.total) +
+                    (typeof day.hitRate === "number" ? "\n当日缓存命中率: " + (day.hitRate * 100).toFixed(1) + "%" : ""),
+                ),
               ),
             );
           }
@@ -568,7 +625,7 @@ window.__ModuleLoader__.load({
           React.createElement(
             "span", { key: m.key, className: "ts-legend-chip", title: m.key },
             React.createElement("span", { className: "ts-legend-dot", style: { background: PALETTE[i % PALETTE.length] } }),
-            React.createElement("span", { className: "ts-legend-name" }, m.name),
+            React.createElement("span", { className: "ts-legend-name" }, modelLabel(m)),
             React.createElement("span", { className: "ts-legend-val" }, fmtCompact(m.total)),
           ),
         );
@@ -623,7 +680,7 @@ window.__ModuleLoader__.load({
                   strokeDashoffset: -offset,
                   transform: "rotate(-90 " + cx + " " + cy + ")",
                 },
-                React.createElement("title", null, m.name + ": " + fmtCompact(m.total) + " (" + ((m.total / total) * 100).toFixed(1) + "%)"),
+                React.createElement("title", null, modelLabel(m) + ": " + fmtCompact(m.total) + " (" + ((m.total / total) * 100).toFixed(1) + "%)"),
               ),
             );
             offset += dash;
@@ -650,7 +707,7 @@ window.__ModuleLoader__.load({
           React.createElement(
             "div", { key: m.key, className: "ts-legend-row" },
             React.createElement("span", { className: "ts-legend-dot", style: { background: PALETTE[i % PALETTE.length] } }),
-            React.createElement("span", { className: "ts-legend-name", title: m.key }, m.name),
+            React.createElement("span", { className: "ts-legend-name", title: m.key }, modelLabel(m)),
             React.createElement(
               "span", { className: "ts-legend-val" },
               fmtCompact(m.total) + " · " + (total > 0 ? ((m.total / total) * 100).toFixed(1) : "0") + "%",
@@ -741,17 +798,22 @@ window.__ModuleLoader__.load({
 
       function SummaryCards(props) {
         const sum = props.sum;
+        // 缓存命中率口径（与 host token-meter 一致）：cacheRead / (input + cacheRead)，
+        // input 是未缓存输入，cacheWrite 不进分母；无输入时显示「—」而不是 0%。
+        const hitBase = sum.input + sum.cacheRead;
+        const hitRate = hitBase > 0 ? ((sum.cacheRead / hitBase) * 100).toFixed(1) + "%" : "—";
         const items = [
-          ["总 Tokens", fmtCompact(sum.total)],
-          ["输入(含缓存)", fmtCompact(sum.input + sum.cacheRead + sum.cacheWrite)],
-          ["输出", fmtCompact(sum.output)],
+          ["总 Tokens", fmtCompact(sum.total), null],
+          ["输入(含缓存)", fmtCompact(sum.input + sum.cacheRead + sum.cacheWrite), null],
+          ["输出", fmtCompact(sum.output), null],
+          ["缓存命中率", hitRate, "缓存命中率 = 缓存读取 / (未缓存输入 + 缓存读取)"],
         ];
         return React.createElement(
           "div", { className: "ts-cards" },
           items.map((it, i) =>
             React.createElement(
               "div", { key: i, className: "ts-card" },
-              React.createElement("div", { className: "ts-card-label" }, it[0]),
+              React.createElement("div", { className: "ts-card-label", title: it[2] || undefined }, it[0]),
               React.createElement("div", { className: "ts-card-value" }, it[1]),
             ),
           ),
@@ -1066,6 +1128,9 @@ window.__ModuleLoader__.load({
 
         // 当前路由不在支持列表 → 完全不占位.
         if (!provider) return null;
+        // host 侧该 provider 的读数被用户隐藏 → 整行不占位（60s 轮询保留：
+        // host 对隐藏 provider 第一行短路返回，不发 HTTP，开销可忽略）。
+        if (state.loaded && state.ok === false && state.kind === "hidden") return null;
 
         const label = quotaProviderLabel(provider);
         const containerStyle = {
@@ -1151,10 +1216,61 @@ window.__ModuleLoader__.load({
       // 配好后卡片自然出现。v1.8.0 起 mimo 同规则：没配 Cookie（XIAOMI_MIMO_COOKIE
       // 环境变量）就无卡片；「本地用量」形态只在配过 Cookie 且失效降级时出现。
 
+      /** 套餐读数开关（issue #3）：props.on = 读数是否显示，props.onChange(next)。
+       *  点击只调 onChange，真正落库走 host 的 setQuotaHidden（由 QuotaSection 处理），
+       *  失败时宿主状态不变、强刷后 UI 回到真实状态。stopPropagation 防止触发
+       *  卡片/页面的其它点击行为。 */
+      function QuotaToggle(props) {
+        const on = props.on === true;
+        return React.createElement(
+          "button",
+          {
+            type: "button",
+            role: "switch",
+            "aria-checked": on,
+            className: "ts-quota-switch" + (on ? " ts-quota-switch-on" : ""),
+            title: on ? "隐藏该 provider 的套餐读数" : "显示该 provider 的套餐读数",
+            onClick: (e) => {
+              e.stopPropagation();
+              if (props.onChange) props.onChange(!props.on);
+            },
+          },
+          React.createElement("i", null),
+        );
+      }
+
       function QuotaCard(props) {
         const p = props.provider;
         const v = props.value;
         const label = quotaProviderLabel(p);
+        const onToggle = (next) => {
+          if (props.onToggle) props.onToggle(next);
+        };
+        // 隐藏态：host 短路返回 { ok:false, kind:"hidden" }。卡片仍渲染（开关要能
+        // 打开），但不走「获取失败」错误样式——隐藏是用户自己的选择，不是故障。
+        if (props.hidden === true || (v && v.ok === false && v.kind === "hidden")) {
+          return React.createElement(
+            "div", { className: "ts-card ts-quota-card" },
+            React.createElement(
+              "div", { className: "ts-quota-card-head" },
+              React.createElement("span", { className: "ts-quota-card-name" }, label),
+              React.createElement(
+                "span", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                React.createElement("span", { className: "ts-quota-card-status" }, "已隐藏"),
+                React.createElement(QuotaToggle, { on: false, onChange: (next) => onToggle(next) }),
+              ),
+            ),
+            React.createElement("div", { className: "ts-card-label" }, "套餐读数已隐藏，打开开关恢复"),
+          );
+        }
+        // 其余变体（错误卡 / balanceText 卡 / 窗口卡）：右侧 status 与开关成组，
+        // 保持 head 的 space-between 布局不变。
+        const withToggle = (statusEl) =>
+          React.createElement(
+            "span", { style: { display: "flex", alignItems: "center", gap: 8 } },
+            statusEl,
+            React.createElement(QuotaToggle, { on: true, onChange: (next) => onToggle(next) }),
+          );
         if (!v || v.ok !== true) {
           const msg = (v && v.message) || "获取失败";
           return React.createElement(
@@ -1162,7 +1278,7 @@ window.__ModuleLoader__.load({
             React.createElement(
               "div", { className: "ts-quota-card-head" },
               React.createElement("span", { className: "ts-quota-card-name" }, label),
-              React.createElement("span", { className: "ts-quota-card-status ts-quota-err" }, "获取失败"),
+              withToggle(React.createElement("span", { className: "ts-quota-card-status ts-quota-err" }, "获取失败")),
             ),
             React.createElement("div", { className: "ts-card-label", title: msg }, msg),
           );
@@ -1210,7 +1326,7 @@ window.__ModuleLoader__.load({
             React.createElement(
               "div", { className: "ts-quota-card-head" },
               React.createElement("span", { className: "ts-quota-card-name" }, label),
-              React.createElement("span", { className: "ts-quota-card-status" }, head),
+              withToggle(React.createElement("span", { className: "ts-quota-card-status" }, head)),
             ),
             React.createElement("div", { className: "ts-quota-card-value" }, d.balanceText),
             planWindow,
@@ -1240,7 +1356,7 @@ window.__ModuleLoader__.load({
           React.createElement(
             "div", { className: "ts-quota-card-head" },
             React.createElement("span", { className: "ts-quota-card-name" }, label),
-            React.createElement("span", { className: "ts-quota-card-status" }, "套餐用量"),
+            withToggle(React.createElement("span", { className: "ts-quota-card-status" }, "套餐用量")),
           ),
           windows.map((w) =>
             typeof w[1] !== "number"
@@ -1401,6 +1517,15 @@ window.__ModuleLoader__.load({
             }
           } catch (e) { /* 余额区块失败不影响统计页 */ }
         }, []);
+        // 开关切换：调 host setQuotaHidden 落库后强刷。调用失败也强刷——宿主状态
+        // 没变时刷新会让开关回到真实位置（不停在假位置）。
+        const toggle = async (p, nextHidden) => {
+          if (!remote) return;
+          try {
+            await remote.setQuotaHidden(p, nextHidden);
+          } catch (e) { /* 失败也强刷，UI 回到真实状态 */ }
+          load(true);
+        };
         React.useEffect(() => {
           load(false);
           const t = setInterval(() => load(false), QUOTA_REFRESH_MS);
@@ -1441,7 +1566,16 @@ window.__ModuleLoader__.load({
           configured.length > 0
             ? React.createElement(
                 "div", { className: "ts-quota-list" },
-                configured.map((p) => React.createElement(QuotaCard, { key: p, provider: p, value: quotas[p] })),
+                configured.map((p) =>
+                  React.createElement(QuotaCard, {
+                    key: p,
+                    provider: p,
+                    value: quotas[p],
+                    // 隐藏 ≠ 未配置：隐藏卡仍渲染（开关要能打开）。
+                    hidden: !!(quotas[p] && quotas[p].ok === false && quotas[p].kind === "hidden"),
+                    onToggle: (next) => toggle(p, next),
+                  }),
+                ),
               )
             : null,
         );

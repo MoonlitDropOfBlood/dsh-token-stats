@@ -276,6 +276,34 @@ const tokenStatsBailianClearResultSchema = z.union([
 
 const createTokenStatsBailianClearResult = () => tokenStatsBailianClearResultSchema;
 
+// ---- quota display preferences (套餐读数按 provider 开关) --------------------
+// issue #3：设置页每张配额卡的可显示开关。hidden 是当前被隐藏的 provider 列表，
+// 持久化在 <DSH_HOME>/data/dsh-token-stats/quota-prefs.json。
+
+const quotaPrefsValueSchema = z.object({ hidden: z.array(z.string()).readonly() }).readonly();
+
+const tokenStatsQuotaPrefsResultSchema = z.union([
+  z
+    .object({
+      ok: z.literal(true).readonly(),
+      value: quotaPrefsValueSchema,
+    })
+    .readonly(),
+  z
+    .object({
+      ok: z.literal(false).readonly(),
+      error: z
+        .object({
+          code: z.string().readonly(),
+          message: z.string().readonly().optional(),
+        })
+        .readonly(),
+    })
+    .readonly(),
+]);
+
+const createTokenStatsQuotaPrefsResult = () => tokenStatsQuotaPrefsResultSchema;
+
 export const TYPERT = {
   package: "@duke-dsh-plugins/dsh-token-stats",
   face: "host",
@@ -418,6 +446,44 @@ export const TYPERT = {
       },
       sourceLocation: { file: "index.js", line: 1, column: 1 },
     },
+    {
+      id: "dsh-token-stats#tokenStats/setQuotaHidden",
+      service: "tokenStats",
+      namespace: "tokenStats",
+      method: "setQuotaHidden",
+      invocation: { kind: "direct" },
+      parameters: [
+        {
+          name: "provider",
+          wire: "provider",
+          source: "json",
+          codec: {
+            mode: "strict",
+            typeSymbol: "dsh-token-stats#tokenStats/setQuotaHidden:provider",
+            schema: z.string(),
+            create: createStringSchema,
+          },
+        },
+        {
+          name: "hidden",
+          wire: "hidden",
+          source: "json",
+          codec: {
+            mode: "strict",
+            typeSymbol: "dsh-token-stats#tokenStats/setQuotaHidden:hidden",
+            schema: z.boolean(),
+            create: createBooleanSchema,
+          },
+        },
+      ],
+      result: {
+        mode: "strict",
+        typeSymbol: "dsh-token-stats#TokenStatsQuotaPrefsResult",
+        schema: tokenStatsQuotaPrefsResultSchema,
+        create: createTokenStatsQuotaPrefsResult,
+      },
+      sourceLocation: { file: "index.js", line: 1, column: 1 },
+    },
   ],
   model: {
     services: [
@@ -488,6 +554,16 @@ export const TYPERT = {
               "Remove the stored Alibaba Cloud AK/SK (env-configured credentials are unaffected) and drop bailian caches.",
             jsDoc:
               "/**\n * Unset ALIBABA_CLOUD_ACCESS_KEY_ID / SECRET from the credentials store\n * and clear the bailian caches. Environment-variable credentials, if any,\n * keep applying as the fallback path.\n * @returns success or a business failure.\n */",
+          },
+          {
+            kind: "method",
+            name: "setQuotaHidden",
+            signature:
+              "@Remote('setQuotaHidden') async setQuotaHidden(provider: string, hidden: boolean): Promise<TokenStatsQuotaPrefsResult>",
+            summary:
+              "Toggle one provider's quota readout visibility, persisted to quota-prefs.json; a hidden provider short-circuits getQuota / getAllQuotas with kind:\"hidden\" and sends no HTTP.",
+            jsDoc:
+              "/**\n * Toggle whether one provider's plan quota / balance readout is shown.\n * The choice is persisted to <DSH_HOME>/data/dsh-token-stats/quota-prefs.json\n * (separate from the stats store). While hidden, getQuota / getAllQuotas\n * short-circuit with kind:\"hidden\" and issue no HTTP request; switching back\n * drops that provider's cache so the next read is fresh. Credentials are\n * never touched.\n * @param provider - internal provider key.\n * @param hidden - true to hide the readout, false to show it again.\n * @returns success with the sorted hidden list, or an unknown_provider failure.\n */",
           },
         ],
         types: [
@@ -570,6 +646,16 @@ export const TYPERT = {
             name: "TokenStatsBailianClearResult",
             declaration:
               "export type TokenStatsBailianClearResult = { ok: true; value: BailianClearValue } | { ok: false; error: { code: string; message?: string } };",
+          },
+          {
+            name: "QuotaPrefsValue",
+            declaration:
+              "export interface QuotaPrefsValue {\n    readonly hidden: readonly string[];\n}",
+          },
+          {
+            name: "TokenStatsQuotaPrefsResult",
+            declaration:
+              "export type TokenStatsQuotaPrefsResult = { ok: true; value: QuotaPrefsValue } | { ok: false; error: { code: string; message?: string } };",
           },
         ],
       },

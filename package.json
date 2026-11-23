@@ -1,6 +1,6 @@
 {
   "name": "@duke-dsh-plugins/dsh-token-stats",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "Token usage statistics for DeepSeek Harness (7/30-day per-model charts + yearly heatmap) plus an inline coding-plan balance/quota readout in the composer (minimax/deepseek/kimi/openrouter/zhipu/mimo/opencode-go/bailian; mimo uses the dashboard cookie since MiMo exposes no API-key quota API; bailian Token Plan uses AK/SK -> CLI access token -> console gateway, configurable in the settings page when a qwen token plan model is set up).",
   "repository": {
     "type": "git",
@@ -64,6 +64,7 @@
   "scripts": {
     "check": "node --check index.js && node --check bailian-quota.js && node --check client.js && node --check typert.host.js",
     "smoke": "node scripts/smoke-store.mjs",
+    "smoke:seed": "node scripts/smoke-seed-dedup.mjs",
     "smoke:quota": "node scripts/smoke-quota.mjs",
     "smoke:bailian": "node scripts/smoke-bailian.mjs",
     "smoke:robust": "node scripts/smoke-robust-host.mjs && node scripts/smoke-robust-client.mjs",
@@ -75,6 +76,6 @@
     "probe:mimo:session": "node scripts/probe-mimo-session.mjs",
     "probe:bailian": "node scripts/probe-bailian.mjs",
     "fix:bailian-workspace": "node scripts/bailian-workspace-init.mjs",
-    "e2e": "npm run check && npm run smoke && npm run smoke:quota && npm run smoke:bailian && npm run smoke:robust && npm run smoke:navicon && npm run smoke:typert && npm run smoke:compat && node scripts/repro-client-mount.mjs && node scripts/repro-strict-dispatch.mjs && node scripts/repro-profile-boot.mjs"
+    "e2e": "npm run check && npm run smoke && npm run smoke:seed && npm run smoke:quota && npm run smoke:bailian && npm run smoke:robust && npm run smoke:navicon && npm run smoke:typert && npm run smoke:compat && node scripts/repro-client-mount.mjs && node scripts/repro-strict-dispatch.mjs && node scripts/repro-profile-boot.mjs"
   }
 }
